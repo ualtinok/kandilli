@@ -2,12 +2,27 @@
 pragma solidity >=0.8.0;
 
 import {DSTest} from "ds-test/test.sol";
-import {Hevm} from "./Hevm.sol";
+import "forge-std/Vm.sol";
+
+struct Data {
+    string name;
+}
 
 //common utilities for forge tests
 contract Utilities is DSTest {
-    Hevm internal immutable hevm = Hevm(HEVM_ADDRESS);
+    Vm internal immutable hevm = Vm(HEVM_ADDRESS);
     bytes32 internal nextUser = keccak256(abi.encodePacked("user address"));
+
+    function getRandomNumber() external returns (uint256) {
+        // This is to get a random number via FFI. Can comment out and enable ffi via (test --ffi or via toml)
+        // Requires nodejs installed
+        string[] memory inputs = new string[](2);
+        inputs[0] = "node";
+        inputs[1] = "scripts/rand.js";
+        bytes memory res = hevm.ffi(inputs);
+        Data memory data = abi.decode(res, (Data));
+        return uint256(keccak256(abi.encode(data.name)));
+    }
 
     function getNextUserAddress() external returns (address payable) {
         //bytes32 to address conversion
@@ -17,10 +32,7 @@ contract Utilities is DSTest {
     }
 
     //create users with 100 ether balance
-    function createUsers(uint256 userNum)
-        external
-        returns (address payable[] memory)
-    {
+    function createUsers(uint256 userNum) external returns (address payable[] memory) {
         address payable[] memory users = new address payable[](userNum);
         for (uint256 i = 0; i < userNum; i++) {
             address payable user = this.getNextUserAddress();
