@@ -13,6 +13,8 @@
 
 ## Development
 
+First install foundry: https://onbjerg.github.io/foundry-book/getting-started/installation.html 
+
 ### Set up
 ```
 git clone https://github.com/ualtinok/kandilli
