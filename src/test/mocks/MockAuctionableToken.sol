@@ -6,12 +6,14 @@ import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract MockAuctionableToken is IAuctionable, ERC721, Ownable {
+    uint256 private counter = 0;
+
     constructor() ERC721("MockToken", "Mock") {
         _transferOwnership(msg.sender);
     }
 
     function settle(address to, uint256 entropy) external {
-        _safeMint(to, 0);
+        _safeMint(to, counter++);
     }
 
     function getGasCost() external view returns (uint256) {

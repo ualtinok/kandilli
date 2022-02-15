@@ -17,7 +17,7 @@ import {console} from "./test/utils/Console.sol";
  * @title Kandilli: Optimistic Candle Auctions
  * @author Ismet Ufuk Altinok (ism.eth)
  */
-contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
+contract KandilliB is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
     using Counters for Counters.Counter;
     using SafeERC20 for IERC20;
 
@@ -168,10 +168,8 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
     /**
      * @notice This function requests Chainlink VRF for a random number. Once the VRF is called back we know the
      * auction's actual ending time. Anyone can call this function once an auction is passed the definiteEndtime
-     * to collect a bounty later on.  The bounty periodically increases and targets initally to gas cost to call
-     * this function * targetBaseFee. Bounty isn't paid immediately because we cannot know if there will be any bids
-     * before the snuff time without iterating through the bids (which we obviously don't want).
-     * It also attempts to starts the next auction.
+     * to collect a bounty.  The bounty periodically increases and targets initally to gas cost to call
+     * this function * targetBaseFee. It also attempts to starts the next auction.
      */
     function retroSnuffCandle(uint256 _auctionId) external override returns (bytes32 requestId) {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
@@ -181,41 +179,50 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         if (block.timestamp < getAuctionDefiniteEndTime(_auctionId)) {
             revert CannotSnuffCandleBeforeDefiniteEndTime();
         }
-        // If there's no bids, move on to the next auction.
-        // Here we don't pay any bounty as we don't have any funds.
-        // This will probably will be called by auction house.
+
+        // If the bid count is lower than desired number of winners, we don't need to go through the VRF process.
+        // Declare all bidders are winners and move to the next auction.
         if (currentAuction.bids.length == 0) {
             currentAuction.auctionState = KandilState.EndedWithoutBids;
             startNewAuction();
             requestId = bytes32(0);
             emit CandleSnuffed(msg.sender, _auctionId, requestId);
-            return requestId;
-        }
-        if (currentAuction.settings.snuffRequiresSendingLink) {
-            if (LINK.balanceOf(msg.sender) < vrfFee) {
-                revert UserDontHaveEnoughLinkToAskForVRF();
+        } else if (currentAuction.bids.length <= currentAuction.settings.maxWinnersPerAuction) {
+            currentAuction.auctionState = KandilState.AllBidsWon;
+            currentAuction.paidSnuffReward = _getAuctionRetroSnuffBounty(currentAuction, _auctionId);
+            // @dev: Realistically cannot have more than type(uint32).max bidders.
+            currentAuction.winnersProposal.winnerCount = uint32(currentAuction.bids.length);
+            startNewAuction();
+            _safeTransferETHWithFallback(msg.sender, currentAuction.paidSnuffReward);
+            requestId = bytes32(0);
+            emit CandleSnuffed(msg.sender, _auctionId, requestId);
+        } else {
+            // Follow normal snuff process
+            if (currentAuction.settings.snuffRequiresSendingLink) {
+                if (LINK.balanceOf(msg.sender) < vrfFee) {
+                    revert UserDontHaveEnoughLinkToAskForVRF();
+                }
+                bool linkDepositSuccess = LINK.transferFrom(msg.sender, address(this), vrfFee);
+                if (!linkDepositSuccess) {
+                    revert LinkDepositFailed();
+                }
             }
-            bool linkDepositSuccess = LINK.transferFrom(msg.sender, address(this), vrfFee);
-            if (!linkDepositSuccess) {
-                revert LinkDepositFailed();
+
+            if (LINK.balanceOf(address(this)) < vrfFee) {
+                revert HouseDontHaveEnoughLinkToAskForVRF();
             }
+
+            currentAuction.auctionState = KandilState.WaitingVRFResult;
+            requestId = requestRandomness(keyHash, vrfFee);
+            vrfRequestIdToAuctionId[requestId] = _auctionId;
+
+            startNewAuction();
+
+            currentAuction.paidSnuffReward = _getAuctionRetroSnuffBounty(currentAuction, _auctionId);
+            _safeTransferETHWithFallback(msg.sender, currentAuction.paidSnuffReward);
+
+            emit CandleSnuffed(msg.sender, _auctionId, requestId);
         }
-
-        if (LINK.balanceOf(address(this)) < vrfFee) {
-            revert HouseDontHaveEnoughLinkToAskForVRF();
-        }
-
-        currentAuction.auctionState = KandilState.WaitingVRFResult;
-        requestId = requestRandomness(keyHash, vrfFee);
-        vrfRequestIdToAuctionId[requestId] = _auctionId;
-
-        startNewAuction();
-
-        currentAuction.snuff.potentialBounty = _getAuctionRetroSnuffBounty(currentAuction, _auctionId);
-        currentAuction.snuff.sender = payable(msg.sender);
-        currentAuction.snuff.timestamp = uint64(block.timestamp);
-
-        emit CandleSnuffed(msg.sender, _auctionId, requestId);
     }
 
     /**
@@ -229,13 +236,12 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
      * @param _auctionId Auction id
      * @param _winnerBidIds Sorted array of winner bid indexes. Array should be equal or lower than maxWinnersPerAuction.
      * @param _hash keccak256 hash of the winnerBidIds + vrfResult.
-     * @param _totalBidAmount Sum of all bid amounts in winner bids.
      */
     function proposeWinners(
         uint256 _auctionId,
         uint32[] calldata _winnerBidIds,
         bytes32 _hash,
-        uint64 _totalBidAmount
+        uint256 _totalBidAmount
     ) external payable override {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
         if (currentAuction.auctionState != KandilState.VRFSet) {
@@ -251,38 +257,16 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         if (msg.value != (currentAuction.settings.winnersProposalDepositAmount * (1 gwei))) {
             revert DepositAmountForWinnersProposalNotMet();
         }
-        uint64 proposalBounty = _getAuctionWinnersProposalBounty(currentAuction, _auctionId);
-        // Here we check how much extra we have to give for bounty. If all the bids are minBidAmount, it means
-        // we don't have any bounty to give.
-        uint64 totalMinBids = uint64(_winnerBidIds.length) * currentAuction.minBidAmount;
-        if (_totalBidAmount > totalMinBids) {
-            uint64 extraFunds = _totalBidAmount - totalMinBids;
-            proposalBounty = proposalBounty < extraFunds ? proposalBounty : extraFunds;
-        } else {
-            // No bounty for proposing winners as we haven't got extra from bids. We prioritize auctionable settling.
-            proposalBounty = 0;
-        }
 
-        // Also re-calculate snuff bounty. On snuff time we didn't have data to calculate snuff bounty accurately
-        // as we didn't have total bid amount.
-        uint64 potentialSnuffBounty = currentAuction.snuff.potentialBounty;
-        // Here we check how much extra we have to give for bounty. We also need to substract winners proposal bounty.
-        if (_totalBidAmount > totalMinBids + proposalBounty) {
-            uint64 extraFunds = _totalBidAmount - totalMinBids - proposalBounty;
-            currentAuction.snuff.bounty = potentialSnuffBounty < extraFunds ? potentialSnuffBounty : extraFunds;
-        } else {
-            currentAuction.snuff.bounty = 0;
-        }
         currentAuction.winnersProposal = KandilWinnersProposal({
-            bounty: proposalBounty,
+            reward: _getAuctionWinnersProposalBounty(currentAuction, _auctionId),
             totalBidAmount: _totalBidAmount,
             keccak256Hash: _hash,
             winnerCount: uint32(_winnerBidIds.length),
             sender: payable(msg.sender),
-            timestamp: uint64(block.timestamp),
-            isBountyClaimed: false
+            timestamp: uint64(block.timestamp)
         });
-        currentAuction.auctionState = KandilState.WinnersProposed;
+        currentAuction.auctionState = KandilState.WinnersPosted;
 
         emit AuctionWinnersProposed(msg.sender, _auctionId, _hash);
     }
@@ -307,7 +291,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
     ) external override nonReentrant {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
 
-        if (currentAuction.auctionState != KandilState.WinnersProposed) {
+        if (currentAuction.auctionState != KandilState.WinnersPosted) {
             revert CannotChallengeWinnersProposalBeforePosted();
         }
 
@@ -339,29 +323,25 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         }
 
         // Check if bidIdToInclude is in the list.
-        // When bidIdToInclude won't be used in detection, should be sent as 0xFFFFFFFF.
+        // When bidIdToInclude won't be used in detection, should be sent as 0. If the auction has no bids at all,
+        // there won't be a winners proposal anyway.
         if (_bidIndexToInclude != 0xFFFFFFFF && _bidIndexToInclude >= currentAuction.bids.length) {
             revert ChallengeFailedBidIdToIncludeIsNotInBidList();
         }
 
         // Check if bidIdToInclude is in the list of bids that is before snuff time.
         uint32 inclIndex = _bidIndexToInclude == 0xFFFFFFFF ? 0 : _bidIndexToInclude;
-        KandilBid storage bidToInclude = currentAuction.bids[inclIndex];
-        if (
-            _bidIndexToInclude != 0xFFFFFFFF &&
-            uint256(currentAuction.startTime) + uint256(bidToInclude.timePassedFromStart) >
-            getAuctionCandleSnuffedTime(_auctionId)
-        ) {
-            revert ChallengeFailedBidToIncludeIsNotBeforeSnuffTime();
-        }
-
-        KandilBidWithIndex[] memory nBids = new KandilBidWithIndex[](_winnerBidIndexes.length + 1);
+        KandilBidWithIndex[] memory beforeSnuffBids = new KandilBidWithIndex[](_winnerBidIndexes.length + 1);
+        KandilBidWithIndex[] memory afterSnuffBids = new KandilBidWithIndex[](_winnerBidIndexes.length + 1);
+        uint256 bsbC = 0;
+        uint256 asbC = 0;
         uint256 totalBidAmount = 0;
         for (uint32 i = 0; i < _winnerBidIndexes.length; i++) {
             // Check if bidIdToInclude is already in _winnerBidIds.
             if (_winnerBidIndexes[i] == _bidIndexToInclude) {
                 revert ChallengeFailedBidIdToIncludeAlreadyInWinnerList();
             }
+
             // Check if winner proposal have any index higher than actual bids length.
             if (currentAuction.bids.length <= _winnerBidIndexes[i]) {
                 return _challengeSucceeded(currentAuction, _auctionId, 3);
@@ -369,43 +349,73 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
             KandilBid storage bid = currentAuction.bids[_winnerBidIndexes[i]];
             // Check if any bid in the proposal is sent after the snuff time.
-            if (uint256(currentAuction.startTime) + uint256(bid.timePassedFromStart) > getAuctionCandleSnuffedTime(_auctionId)) {
-                return _challengeSucceeded(currentAuction, _auctionId, 4);
+            if (uint256(currentAuction.startTime) + uint256(bid.timePassedFromStart) < getAuctionCandleSnuffedTime(_auctionId)) {
+                beforeSnuffBids[bsbC++] = KandilBidWithIndex(
+                    bid.bidder,
+                    bid.timePassedFromStart,
+                    bid.bidAmount,
+                    bid.isProcessed,
+                    _winnerBidIndexes[i]
+                );
+            } else {
+                afterSnuffBids[asbC++] = KandilBidWithIndex(
+                    bid.bidder,
+                    bid.timePassedFromStart,
+                    bid.bidAmount,
+                    bid.isProcessed,
+                    _winnerBidIndexes[i]
+                );
             }
-
             totalBidAmount += bid.bidAmount;
-            nBids[i] = KandilBidWithIndex(
-                bid.bidder,
-                bid.timePassedFromStart,
-                bid.bidAmount,
-                bid.isProcessed,
-                _winnerBidIndexes[i]
-            );
         }
-
+        // Proposal bid count doesn't match winnerBidIds
         if (totalBidAmount != currentAuction.winnersProposal.totalBidAmount) {
             return _challengeSucceeded(currentAuction, _auctionId, 6);
         }
+        // Add bid to include to the list of bids and sort again. If any items order changes, the challenge will succeed.
         if (_bidIndexToInclude != 0xFFFFFFFF) {
-            // Add bid to include to the list of bids and sort again. If any items order changes, the challenge will succeed.
-            nBids[_winnerBidIndexes.length] = KandilBidWithIndex(
-                bidToInclude.bidder,
-                bidToInclude.timePassedFromStart,
-                bidToInclude.bidAmount,
-                bidToInclude.isProcessed,
-                _bidIndexToInclude
-            );
-        }
-        // Depending on contract size, sorting functions can be either in the contract or lib.
-        // Having in library have extra gas cost because of copy.
-        // _sortBids(nBids);
-        nBids = Helpers.sortBids(nBids);
-        for (uint32 i = 0; i < _winnerBidIndexes.length; i++) {
-            if (nBids[i].index != _winnerBidIndexes[i]) {
-                return _challengeSucceeded(currentAuction, _auctionId, 7);
+            KandilBid storage bidToInclude = currentAuction.bids[inclIndex];
+            if (
+                uint256(currentAuction.startTime) + uint256(bidToInclude.timePassedFromStart) <
+                getAuctionCandleSnuffedTime(_auctionId)
+            ) {
+                beforeSnuffBids[bsbC++] = KandilBidWithIndex(
+                    bidToInclude.bidder,
+                    bidToInclude.timePassedFromStart,
+                    bidToInclude.bidAmount,
+                    bidToInclude.isProcessed,
+                    _bidIndexToInclude
+                );
+            } else {
+                afterSnuffBids[asbC++] = KandilBidWithIndex(
+                    bidToInclude.bidder,
+                    bidToInclude.timePassedFromStart,
+                    bidToInclude.bidAmount,
+                    bidToInclude.isProcessed,
+                    _bidIndexToInclude
+                );
             }
         }
 
+        // Depending on contract size, sorting functions can be either in the contract or lib.
+        // Having in library have extra gas cost because of copy.
+        // _sortBids(nBids);
+        if (bsbC > 0) {
+            beforeSnuffBids = Helpers.sortBids(beforeSnuffBids);
+        }
+        if (asbC > 0) {
+            afterSnuffBids = Helpers.sortBids(afterSnuffBids);
+        }
+        for (uint32 i = 0; i < bsbC; i++) {
+            if (beforeSnuffBids[i].index != _winnerBidIndexes[i]) {
+                return _challengeSucceeded(currentAuction, _auctionId, 4);
+            }
+        }
+        for (uint32 i = 0; i < asbC; i++) {
+            if (afterSnuffBids[i].index != _winnerBidIndexes[bsbC + i]) {
+                return _challengeSucceeded(currentAuction, _auctionId, 4);
+            }
+        }
         revert ChallengeFailedWinnerProposalIsCorrect();
     }
 
@@ -416,7 +426,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
     ) internal {
         emit ChallengeSucceded(msg.sender, _auctionId, reason);
 
-        currentAuction.winnersProposal.bounty = 0;
+        currentAuction.winnersProposal.reward = 0;
         currentAuction.winnersProposal.keccak256Hash = 0;
         currentAuction.winnersProposal.sender = payable(address(0));
         currentAuction.winnersProposal.timestamp = 0;
@@ -424,65 +434,27 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         _safeTransferETHWithFallback(msg.sender, (currentAuction.settings.winnersProposalDepositAmount * (1 gwei)));
     }
 
-    function claimWinnersProposalBounty(uint256 _auctionId) external override nonReentrant {
+    function claimWinnersProposalReward(uint256 _auctionId) external override nonReentrant {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
 
-        if (currentAuction.auctionState != KandilState.WinnersProposed) {
-            revert CannotClaimWinnersProposalBountyBeforePosted();
+        if (currentAuction.auctionState != KandilState.WinnersPosted) {
+            revert CannotClaimWinnersProposalRewardBeforePosted();
         }
 
         if (msg.sender != currentAuction.winnersProposal.sender) {
-            revert CannotClaimWinnersProposalBountyIfNotProposer();
+            revert CannotClaimWinnersProposalRewardIfNotProposer();
         }
 
-        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint64(block.timestamp)) {
-            revert CannotClaimWinnersProposalBountyBeforeChallengePeriodIsOver();
+        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod > uint64(block.timestamp)) {
+            revert CannotClaimWinnersProposalRewardBeforeChallengePeriodIsOver();
         }
 
-        if (currentAuction.winnersProposal.isBountyClaimed) {
-            revert WinnersProposalBountyAlreadyClaimed();
-        }
+        uint256 reward = currentAuction.winnersProposal.reward +
+            (currentAuction.settings.winnersProposalDepositAmount * (1 gwei));
 
-        if (currentAuction.winnersProposal.bounty == 0) {
-            revert WinnersProposalBountyIsZero();
-        }
+        _safeTransferETHWithFallback(msg.sender, reward);
 
-        uint256 bounty = (currentAuction.winnersProposal.bounty + currentAuction.settings.winnersProposalDepositAmount) *
-            (1 gwei);
-
-        currentAuction.winnersProposal.isBountyClaimed = true;
-
-        _safeTransferETHWithFallback(msg.sender, bounty);
-
-        emit WinnersProposalBountyClaimed(msg.sender, _auctionId, bounty);
-    }
-
-    function claimSnuffBounty(uint256 _auctionId) external override nonReentrant {
-        Kandil storage currentAuction = kandilAuctions[_auctionId];
-
-        if (currentAuction.auctionState != KandilState.WinnersProposed) {
-            revert CannotClaimSnuffBountyBeforeWinnersProposed();
-        }
-
-        if (msg.sender != currentAuction.snuff.sender) {
-            revert CannotClaimSnuffBountyBeforeIfNotSnuffer();
-        }
-
-        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint64(block.timestamp)) {
-            revert CannotClaimSnuffBountyBeforeChallengePeriodIsOver();
-        }
-
-        if (currentAuction.snuff.isBountyClaimed) {
-            revert SnuffBountyAlreadyClaimed();
-        }
-
-        if (currentAuction.snuff.bounty == 0) {
-            revert SnuffBountyIsZero();
-        }
-
-        _safeTransferETHWithFallback(currentAuction.snuff.sender, (currentAuction.snuff.bounty * (1 gwei)));
-
-        emit SnuffBountyClaimed(currentAuction.snuff.sender, _auctionId, currentAuction.snuff.bounty);
+        emit WinnersProposalRewardClaimed(_auctionId, msg.sender, reward);
     }
 
     function withdrawLostBid(
@@ -492,8 +464,8 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         uint32[] calldata _winnerBidIds
     ) external override nonReentrant {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
-        if (currentAuction.auctionState != KandilState.WinnersProposed) {
-            revert CannotWithdrawLostBidBeforeWinnersProposed();
+        if (currentAuction.auctionState != KandilState.WinnersPosted) {
+            revert CannotWithdrawLostBidBeforeWinnersPosted();
         }
 
         if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint64(block.timestamp)) {
@@ -542,9 +514,6 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         uint256 _winnerBidIdIndex
     ) external override nonReentrant {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
-        if (_winnerBidIdIndex >= _winnerBidIds.length) {
-            revert BidIdDoesntExist();
-        }
         uint32 bidIndex = _winnerBidIds[_winnerBidIdIndex];
         if (
             currentAuction.bids.length <= bidIndex ||
@@ -554,20 +523,24 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert BidIdDoesntExist();
         }
 
-        if (currentAuction.auctionState != KandilState.WinnersProposed) {
-            revert CannotClaimAuctionItemBeforeWinnersProposed();
-        }
+        if (currentAuction.auctionState != KandilState.AllBidsWon) {
+            if (currentAuction.auctionState != KandilState.WinnersPosted) {
+                revert CannotClaimAuctionItemBeforeWinnersPosted();
+            }
 
-        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint64(block.timestamp)) {
-            revert CannotClaimAuctionItemBeforeChallengePeriodEnds();
-        }
+            if (
+                currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint64(block.timestamp)
+            ) {
+                revert CannotClaimAuctionItemBeforeChallengePeriodEnds();
+            }
 
-        if (keccak256(abi.encodePacked(_winnerBidIds, currentAuction.vrfResult)) != _hash) {
-            revert WinnerProposalDataDoesntHaveCorrectHash();
-        }
+            if (keccak256(abi.encodePacked(_winnerBidIds, currentAuction.vrfResult)) != _hash) {
+                revert WinnerProposalDataDoesntHaveCorrectHash();
+            }
 
-        if (currentAuction.winnersProposal.keccak256Hash != _hash) {
-            revert WinnerProposalHashDoesntMatchPostedHash();
+            if (currentAuction.winnersProposal.keccak256Hash != _hash) {
+                revert WinnerProposalHashDoesntMatchPostedHash();
+            }
         }
 
         if (currentAuction.bids[bidIndex].isProcessed) {
@@ -581,8 +554,19 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             uint256(keccak256(abi.encodePacked(currentAuction.vrfResult, bidIndex, "EnTrOpy")))
         );
 
-        // Calculate bounty based on minBidAmount.
-        _safeTransferETHWithFallback(msg.sender, uint256(currentAuction.minBidAmount * (1 gwei)));
+        // Calculate bounty based on minBidAmount - rewards paid for snuff and winners proposal.
+
+        uint256 paidRewardPerWinner = (currentAuction.paidSnuffReward + currentAuction.winnersProposal.reward) /
+            uint256(currentAuction.winnersProposal.winnerCount);
+        console.log(currentAuction.paidSnuffReward);
+        console.log(currentAuction.winnersProposal.reward);
+        console.log(currentAuction.winnersProposal.winnerCount);
+        console.log(paidRewardPerWinner);
+        console.log(uint256(currentAuction.minBidAmount * (1 gwei)));
+
+        if (uint256(currentAuction.minBidAmount * (1 gwei)) - paidRewardPerWinner > 0) {
+            _safeTransferETHWithFallback(msg.sender, uint256(currentAuction.minBidAmount * (1 gwei)) - paidRewardPerWinner);
+        }
 
         recordBaseFeeObservation();
 
@@ -591,20 +575,17 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
     function moveAuctionFundsToOwner(uint256 _auctionId) external override nonReentrant {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
-        if (currentAuction.auctionState != KandilState.WinnersProposed) {
-            revert CannotMoveFundsBeforeWinnersProposed();
+        if (currentAuction.auctionState != KandilState.WinnersPosted || currentAuction.winnersProposal.timestamp == 0) {
+            revert CannotMoveFundsBeforeWinnersPosted();
         }
 
         if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint64(block.timestamp)) {
             revert CannotMoveFundsBeforeChallengePeriodEnds();
         }
 
-        // Calculate all bounties.
-        uint256 paidBounties = (currentAuction.winnersProposal.winnerCount * (currentAuction.minBidAmount * (1 gwei))) +
-            (currentAuction.snuff.bounty * (1 gwei)) +
-            (currentAuction.winnersProposal.bounty * (1 gwei));
-
-        uint256 totalAmount = uint256(currentAuction.winnersProposal.totalBidAmount * (1 gwei)) - paidBounties;
+        // This also includes snuff and winner proposal rewards as we already pay those from minBidAmounts.
+        uint256 paidClaimReward = currentAuction.winnersProposal.winnerCount * (currentAuction.minBidAmount * (1 gwei));
+        uint256 totalAmount = uint256(currentAuction.winnersProposal.totalBidAmount * (1 gwei)) - paidClaimReward;
         _safeTransferETHWithFallback(owner(), totalAmount);
     }
 
@@ -675,7 +656,10 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
     function getClaimWinningBidBounty(uint256 _auctionId) public view returns (uint256) {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
-        return uint256(currentAuction.minBidAmount * (1 gwei));
+        return
+            uint256(currentAuction.minBidAmount * (1 gwei)) -
+            ((currentAuction.paidSnuffReward + currentAuction.winnersProposal.reward) /
+                uint256(currentAuction.winnersProposal.winnerCount));
     }
 
     /**
@@ -701,10 +685,6 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         return uint256(kandilAuctions[_auctionId].startTime + kandilAuctions[_auctionId].settings.auctionTotalDuration);
     }
 
-    function getAuctionWinnerProposalTime(uint256 _auctionId) public view returns (uint256) {
-        return uint256(kandilAuctions[_auctionId].winnersProposal.timestamp);
-    }
-
     function getAuctionVRFSetTime(uint256 _auctionId) public view returns (uint256) {
         return uint256(kandilAuctions[_auctionId].startTime + kandilAuctions[_auctionId].vrfSetTime);
     }
@@ -713,34 +693,19 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         return uint256(kandilAuctions[_auctionId].settings.snuffPercentage);
     }
 
-    /**
-     * @notice Get the potential snuff bounty before calling the snuff. After snuff bounty could be as low as 0,
-     * due to not having enough bid amount (after snuff time) to cover snuff bounty.
-     */
-    function getAuctionPotentialRetroSnuffBounty(uint256 _auctionId) public view returns (uint256) {
-        Kandil storage currentAuction = kandilAuctions[_auctionId];
-        return _getAuctionRetroSnuffBounty(currentAuction, _auctionId) * (1 gwei);
-    }
-
-    function getAuctionPotentialWinnersProposalBounty(uint256 _auctionId) public view returns (uint256) {
-        Kandil storage currentAuction = kandilAuctions[_auctionId];
-        return _getAuctionWinnersProposalBounty(currentAuction, _auctionId) * (1 gwei);
-    }
-
-    /**
-     * @notice Before winners proposal, this will be always 0.
-     */
     function getAuctionRetroSnuffBounty(uint256 _auctionId) public view returns (uint256) {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
-        return currentAuction.snuff.bounty * (1 gwei);
+        return _getAuctionRetroSnuffBounty(currentAuction, _auctionId);
     }
 
-    /**
-     * @notice Before winners proposal, this will be always 0.
-     */
-    function getAuctionWinnersProposalBounty(uint256 _auctionId) public view returns (uint256) {
+    function getAuctionPaidRetroSnuffBounty(uint256 _auctionId) public view returns (uint256) {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
-        return currentAuction.winnersProposal.bounty * (1 gwei);
+        return currentAuction.paidSnuffReward;
+    }
+
+    function getAuctionPaidRetroWinnersProposalBounty(uint256 _auctionId) public view returns (uint256) {
+        Kandil storage currentAuction = kandilAuctions[_auctionId];
+        return currentAuction.winnersProposal.reward;
     }
 
     function getAuctionMaxWinnerCount(uint256 _auctionId) external view returns (uint256 r) {
@@ -764,39 +729,34 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
      * Bounty can only go as high as 10x the gas cost of calling the snuff function.
      */
     function _calculateBounty(
-        uint64 bountyBase,
-        uint64 timeMultiplier,
+        uint256 bountyBase,
+        uint256 timeMultiplier,
         uint8 maxBountyMultiplier
-    ) internal view returns (uint64) {
+    ) internal view returns (uint256) {
         return
             bountyBase + ((bountyBase / 10) * timeMultiplier) > bountyBase * maxBountyMultiplier
                 ? bountyBase * maxBountyMultiplier
                 : bountyBase + ((bountyBase / 10) * timeMultiplier);
     }
 
-    function _getAuctionRetroSnuffBounty(Kandil storage currentAuction, uint256 _auctionId) internal view returns (uint64) {
-        uint64 timePassed = uint64(block.timestamp - getAuctionDefiniteEndTime(_auctionId));
-        uint64 timeMultiplier = timePassed / 12;
-        uint64 bountyBase = (currentAuction.settings.retroSnuffGas * currentAuction.targetBaseFee);
+    function _getAuctionRetroSnuffBounty(Kandil storage currentAuction, uint256 _auctionId) internal view returns (uint256) {
+        uint256 timePassed = block.timestamp - getAuctionDefiniteEndTime(_auctionId);
+        uint256 timeMultiplier = timePassed / 12;
+        uint256 bountyBase = (currentAuction.settings.retroSnuffGas * currentAuction.targetBaseFee * 1 gwei);
 
-        // WRONG we cannot know if we have bids before the snuff time. All bids might be after the snuff.
-        // As we won't go through the bids array to see how much funds we have for bounties, we simply use the minimum bid
-        // safe basis for the bounty. If we don't have enough bids to cover the calculated bounty we will pay based on
-        // the minimum bid amounts. This amount might not even cover the gas cost of calling snuff but we don't have
-        // other options. In such cases, auction house owner would probably call snuff. Also as we'll pay bounty for
-        // winners proposal, we divide total minimum bounty by 2.
-        //uint256 minimumAmountCollected = (currentAuction.minBidAmount * (1 gwei) * currentAuction.bids.length) / 2;
-        //uint256 calculatedBounty = _calculateBounty(bountyBase, timeMultiplier, currentAuction.settings.maxBountyMultiplier);
-        //return calculatedBounty < minimumAmountCollected ? calculatedBounty : minimumAmountCollected;
-
-        return _calculateBounty(bountyBase, timeMultiplier, currentAuction.settings.maxBountyMultiplier);
+        // We might not be able to pay the bounty if we haven't received enough bids so that we number of bids we received
+        // can cover the reward based on the minimum bid amount of each bid cause we don't want to go through the bid array.
+        // This amount might not even cover the gas cost of calling snuff but we don't have other options. In such case,
+        // auction house owner should call snuff.
+        uint256 minimumAmountCollected = currentAuction.minBidAmount * (1 gwei) * currentAuction.bids.length;
+        uint256 calculatedBounty = _calculateBounty(bountyBase, timeMultiplier, currentAuction.settings.maxBountyMultiplier);
+        return calculatedBounty < minimumAmountCollected ? calculatedBounty : minimumAmountCollected;
     }
 
-    function _getAuctionWinnersProposalBounty(Kandil storage currentAuction, uint256 _auctionId) internal view returns (uint64) {
-        uint64 timePassed = uint64(block.timestamp - getAuctionVRFSetTime(_auctionId));
-        uint64 timeMultiplier = timePassed / 12;
-        uint64 bountyBase = (currentAuction.settings.winnersProposalGas * currentAuction.targetBaseFee);
-
+    function _getAuctionWinnersProposalBounty(Kandil storage currentAuction, uint256 _auctionId) internal view returns (uint256) {
+        uint256 timePassed = block.timestamp - getAuctionVRFSetTime(_auctionId);
+        uint256 timeMultiplier = timePassed / 12;
+        uint256 bountyBase = (currentAuction.settings.winnersProposalGas * currentAuction.targetBaseFee * 1 gwei);
         return _calculateBounty(bountyBase, timeMultiplier, currentAuction.settings.maxBountyMultiplier);
     }
 
@@ -847,5 +807,68 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             weth.deposit{value: _amount}();
             IERC20(address(weth)).safeTransfer(_to, _amount);
         }
+    }
+
+    function _sortBids(IKandilli.KandilBidWithIndex[] memory nBids) internal pure {
+        _sortBidByAmount(nBids, 0, int256(nBids.length - 1));
+        for (uint256 i; i < nBids.length - 1; i++) {
+            if (nBids[i].bidAmount == nBids[i + 1].bidAmount) {
+                uint256 start = i;
+                uint256 end;
+                for (uint256 z = i + 1; z < nBids.length - 1; z++) {
+                    if (nBids[z].bidAmount != nBids[z + 1].bidAmount) {
+                        end = z;
+                        break;
+                    }
+                }
+                end = end == 0 ? nBids.length - 1 : end;
+                _secondarySortBidsByIndex(nBids, int256(start), int256(end));
+                i = end;
+            }
+        }
+    }
+
+    function _sortBidByAmount(
+        IKandilli.KandilBidWithIndex[] memory arr,
+        int256 left,
+        int256 right
+    ) private pure {
+        int256 i = left;
+        int256 j = right;
+        if (i == j) return;
+        uint256 pivot = arr[uint256(left + (right - left) / 2)].bidAmount;
+        while (i <= j) {
+            while (arr[uint256(i)].bidAmount > pivot) i++;
+            while (pivot > arr[uint256(j)].bidAmount) j--;
+            if (i <= j) {
+                (arr[uint256(i)], arr[uint256(j)]) = (arr[uint256(j)], arr[uint256(i)]);
+                i++;
+                j--;
+            }
+        }
+        if (left < j) _sortBidByAmount(arr, left, j);
+        if (i < right) _sortBidByAmount(arr, i, right);
+    }
+
+    function _secondarySortBidsByIndex(
+        IKandilli.KandilBidWithIndex[] memory arr,
+        int256 left,
+        int256 right
+    ) private pure {
+        int256 i = left;
+        int256 j = right;
+        if (i == j) return;
+        uint256 pivot = arr[uint256(left + (right - left) / 2)].index;
+        while (i <= j) {
+            while (arr[uint256(i)].index < pivot) i++;
+            while (pivot < arr[uint256(j)].index) j--;
+            if (i <= j) {
+                (arr[uint256(i)], arr[uint256(j)]) = (arr[uint256(j)], arr[uint256(i)]);
+                i++;
+                j--;
+            }
+        }
+        if (left < j) _secondarySortBidsByIndex(arr, left, j);
+        if (i < right) _secondarySortBidsByIndex(arr, i, right);
     }
 }

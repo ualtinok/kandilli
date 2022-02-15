@@ -47,4 +47,8 @@ contract Utilities is DSTest {
         uint256 targetBlock = block.number + numBlocks;
         hevm.roll(targetBlock);
     }
+
+    function getNamedUser(string memory name) external returns (address payable) {
+        return payable(address(uint160(uint256(keccak256(abi.encodePacked(name))))));
+    }
 }

@@ -23,10 +23,10 @@ struct ProposeWinnersResult {
     uint256 vrfResult;
     uint256 numWinners;
     uint256 snuffTime;
-    uint64 totalBidAmount;
+    uint256 totalBidAmount;
 }
 
-contract KandilliTest is DSTest {
+contract KandilliBTest is DSTest {
     using Strings for uint256;
 
     event AuctionStarted(uint256 auctionId, uint256 startTime);
@@ -63,7 +63,6 @@ contract KandilliTest is DSTest {
     // If you change this make sure there's less winners than bids that are before snuff time.
     // Otherwise some tests will fail.
     uint256 internal randomE = 18392480285055155400540772292264222449548204563388120189582018752977384988357;
-    //uint256 internal randomE = 65767386873957718740268074328995333784005072918202063793299981458799458871201; // single bid, 0 winners
     uint8 internal maxBountyMultiplier = 10;
     uint8 internal snuffPercentage = 30;
 
@@ -196,9 +195,6 @@ contract KandilliTest is DSTest {
         uint16 timePassed,
         bool isLinkRequired
     ) public {
-        /*        uint256 randomE = 65767386873957718740268074328995333784005072918202063793299981458799458871201;
-        uint16 timePassed = 0;
-        bool isLinkRequired = false;*/
         vm.startPrank(utils.getNamedUser("deployer"));
         kandilli.setAuctionRequiresLink(isLinkRequired);
         kandilli.init();
@@ -206,6 +202,7 @@ contract KandilliTest is DSTest {
 
         uint256 auctionId = 1;
         uint256 numBids = randomE % maxTestBidCount;
+
         uint256 startTime = kandilli.getAuctionStartTime(auctionId);
         uint256 maxNumWinners = kandilli.getAuctionMaxWinnerCount(auctionId);
         console.log("maxNumWinners: ", maxNumWinners);
@@ -222,99 +219,70 @@ contract KandilliTest is DSTest {
         vm.expectRevert(abi.encodeWithSignature("CannotSnuffCandleForNotRunningAuction()"));
         kandilli.retroSnuffCandle(99);
 
-        //uint256 aliceOldBalance = alice.balance;
+        uint256 aliceOldBalance = alice.balance;
         vm.warp(startTime + auctionTotalDuration + timePassed);
-        /*        uint256 bounty = kandilli.getAuctionRetroSnuffBounty(auctionId);
+        uint256 bounty = kandilli.getAuctionRetroSnuffBounty(auctionId);
         uint256 minimumAmountCollected = kandilli.getAuctionMinimumBidAmount(auctionId) * (1 gwei) * numBids;
         bounty = bounty < minimumAmountCollected ? bounty : minimumAmountCollected;
-        assertLe(bounty, uint256(maxBountyMultiplier) * uint256(retroSnuffGas) * (100 gwei));*/
+        assertLe(bounty, uint256(maxBountyMultiplier) * uint256(retroSnuffGas) * (100 gwei));
 
-        if (numBids == 0) {
-            vm.startPrank(alice);
-            vm.expectEmit(true, false, false, true);
-            emit CandleSnuffed(alice, auctionId, bytes32(0));
-            bytes32 reqId = kandilli.retroSnuffCandle(auctionId);
-            assertEq(reqId, bytes32(0));
+        if (allBidsAreWinners) {
+            vm.prank(alice);
+            kandilli.retroSnuffCandle(auctionId);
             IKandilli.KandilState state = kandilli.getAuctionState(auctionId);
-            assertEq(uint256(state), uint256(IKandilli.KandilState.EndedWithoutBids));
-            vm.stopPrank();
-            return;
-        }
 
-        if (isLinkRequired) {
-            vm.prank(bob);
-            vm.expectRevert(abi.encodeWithSignature("UserDontHaveEnoughLinkToAskForVRF()"));
-            kandilli.retroSnuffCandle(auctionId);
-
-            vm.startPrank(alice);
-            vm.expectRevert("ERC20: transfer amount exceeds allowance");
-            kandilli.retroSnuffCandle(auctionId);
-            vm.stopPrank();
-        }
-
-        {
-            vm.startPrank(alice);
+            numBids == 0
+                ? assertEq(uint256(state), uint256(IKandilli.KandilState.EndedWithoutBids))
+                : assertEq(uint256(state), uint256(IKandilli.KandilState.AllBidsWon));
+            uint256 aliceNewBalance = alice.balance;
+            assertEq(aliceNewBalance - aliceOldBalance, bounty);
+        } else {
             if (isLinkRequired) {
-                linkToken.approve(address(kandilli), vrfFee);
-            } else {
-                // Only alice (users[0]) have link tokens.
-                linkToken.transfer(address(kandilli), vrfFee);
+                vm.prank(bob);
+                vm.expectRevert(abi.encodeWithSignature("UserDontHaveEnoughLinkToAskForVRF()"));
+                kandilli.retroSnuffCandle(auctionId);
+
+                vm.startPrank(alice);
+                vm.expectRevert("ERC20: transfer amount exceeds allowance");
+                kandilli.retroSnuffCandle(auctionId);
             }
-            vm.expectEmit(true, false, false, false);
-            emit CandleSnuffed(alice, auctionId, bytes32(0));
-            bytes32 requestId = kandilli.retroSnuffCandle(auctionId);
-            vrfCoordinatorMock.callBackWithRandomness(requestId, randomE, address(kandilli));
-            //uint256 aliceNewBalance = alice.balance;
-            //assertEq(aliceNewBalance - aliceOldBalance, bounty);
-            vm.stopPrank();
-        }
 
-        {
-            uint256 snuffTime = kandilli.getAuctionCandleSnuffedTime(auctionId);
-            uint256 endTime = kandilli.getAuctionDefiniteEndTime(auctionId);
-            uint256 snuffPercentage = kandilli.getAuctionSnuffPercentage(auctionId);
-            uint256 snuffEarliestPossibleTime = endTime - (((endTime - startTime) * snuffPercentage) / 100);
+            {
+                vm.startPrank(alice);
+                if (isLinkRequired) {
+                    linkToken.approve(address(kandilli), vrfFee);
+                } else {
+                    // Only alice (users[0]) have link tokens.
+                    linkToken.transfer(address(kandilli), vrfFee);
+                }
+                vm.expectEmit(true, false, false, false);
+                emit CandleSnuffed(alice, auctionId, bytes32(0));
+                bytes32 requestId = kandilli.retroSnuffCandle(auctionId);
+                vrfCoordinatorMock.callBackWithRandomness(requestId, randomE, address(kandilli));
+                uint256 aliceNewBalance = alice.balance;
+                assertEq(aliceNewBalance - aliceOldBalance, bounty);
+                vm.stopPrank();
+            }
 
-            assertGt(snuffTime, startTime);
-            assertLt(snuffTime, endTime);
-            assertGe(snuffTime, snuffEarliestPossibleTime);
+            {
+                uint256 snuffTime = kandilli.getAuctionCandleSnuffedTime(auctionId);
+                uint256 endTime = kandilli.getAuctionDefiniteEndTime(auctionId);
+                uint256 snuffPercentage = kandilli.getAuctionSnuffPercentage(auctionId);
+                uint256 snuffEarliestPossibleTime = endTime - (((endTime - startTime) * snuffPercentage) / 100);
+
+                assertGt(snuffTime, startTime);
+                assertLt(snuffTime, endTime);
+                assertGe(snuffTime, snuffEarliestPossibleTime);
+            }
         }
 
         // Fail when trying to candle that's already snuffed
         vm.expectRevert(abi.encodeWithSignature("CannotSnuffCandleForNotRunningAuction()"));
         kandilli.retroSnuffCandle(auctionId);
-
-        vm.expectRevert(abi.encodeWithSignature("CannotClaimSnuffBountyBeforeWinnersProposed()"));
-        kandilli.claimSnuffBounty(auctionId);
-
-        uint256 currentSnuffBounty = kandilli.getAuctionRetroSnuffBounty(auctionId);
-        assertEq(currentSnuffBounty, 0);
-
-        ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, true);
-        console.log("tot", pwr.totalBidAmount);
-        console.log("numWinner", pwr.numWinners);
-        vm.expectRevert(abi.encodeWithSignature("CannotClaimSnuffBountyBeforeIfNotSnuffer()"));
-        kandilli.claimSnuffBounty(auctionId);
-
-        vm.startPrank(alice);
-
-        vm.expectRevert(abi.encodeWithSignature("CannotClaimSnuffBountyBeforeChallengePeriodIsOver()"));
-        kandilli.claimSnuffBounty(auctionId);
-
-        uint256 proposalTime = kandilli.getAuctionWinnerProposalTime(auctionId);
-        vm.warp(proposalTime + fraudChallengePeriod + 1);
-
-        currentSnuffBounty = kandilli.getAuctionRetroSnuffBounty(auctionId);
-        if (currentSnuffBounty > 0) {
-            uint256 beforeBalance = alice.balance;
-            kandilli.claimSnuffBounty(auctionId);
-            uint256 afterBalance = alice.balance;
-            assertEq(afterBalance - beforeBalance, currentSnuffBounty);
-        }
     }
 
-    function testProposeWinners(uint256 randomE) public {
-        //uint256 randomE = 1858916283958370368913553293944955234632628839575658048919750774306277050000;
+    function testPostWinners(uint256 randomE) public {
+        //uint256 randomE = 2284333541183973677899875583466967843272097891033367454855368950952441724508;
         vm.prank(utils.getNamedUser("deployer"));
         kandilli.init();
 
@@ -338,120 +306,104 @@ contract KandilliTest is DSTest {
         _snuffCandle(auctionId, randomE, startTime);
 
         IKandilli.KandilState state = kandilli.getAuctionState(auctionId);
+        console.log("num", numBids);
+        //TODO: Use vm.assume() when it's merged
+        if (state != IKandilli.KandilState.AllBidsWon && state != IKandilli.KandilState.EndedWithoutBids) {
+            // Fail when proposing winners with wrong hash
+            ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, false);
+            vm.expectRevert(abi.encodeWithSignature("IncorrectHashForWinnerBids()"));
+            kandilli.proposeWinners{value: depositAmount}(
+                auctionId,
+                pwr.winnerBidIds,
+                keccak256(abi.encodePacked("x")),
+                pwr.totalBidAmount
+            );
 
-        // No bids
-        if (state == IKandilli.KandilState.EndedWithoutBids) {
-            uint32[] memory dummyWinnerIds = new uint32[](3);
-            bytes32 dummyHash = keccak256(abi.encodePacked("x"));
+            // Fail when posting winners with wrong deposit amount
+            vm.expectRevert(abi.encodeWithSignature("DepositAmountForWinnersProposalNotMet()"));
+            kandilli.proposeWinners{value: 1 wei}(auctionId, pwr.winnerBidIds, pwr.hash, pwr.totalBidAmount);
 
-            dummyWinnerIds[0] = 3;
-            dummyWinnerIds[1] = 3;
-            dummyWinnerIds[2] = 3;
-            vm.expectRevert(abi.encodeWithSignature("CannotProposeWinnersBeforeVRFSetOrWhenWinnersAlreadyPosted()"));
-            kandilli.proposeWinners{value: depositAmount}(auctionId, dummyWinnerIds, dummyHash, 0);
+            // Succeed to post winners and check balance
+            {
+                uint256 aliceBalanceBefore = alice.balance;
+                vm.prank(alice);
+                vm.expectEmit(true, false, false, true);
+                emit AuctionWinnersProposed(alice, auctionId, pwr.hash);
+                kandilli.proposeWinners{value: depositAmount}(auctionId, pwr.winnerBidIds, pwr.hash, pwr.totalBidAmount);
+                uint256 aliceBalanceAfter = alice.balance;
+                assertEq(aliceBalanceBefore - aliceBalanceAfter, depositAmount);
+            }
 
-            return;
+            // Fail when posting winners a second time
+            {
+                vm.expectRevert(abi.encodeWithSignature("CannotProposeWinnersBeforeVRFSetOrWhenWinnersAlreadyPosted()"));
+                kandilli.proposeWinners{value: depositAmount}(auctionId, pwr.winnerBidIds, pwr.hash, pwr.totalBidAmount);
+            }
         }
-        assertEq(uint256(state), uint256(IKandilli.KandilState.VRFSet));
-        ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, false);
-        // Fail when posting winners with wrong hash
-        vm.expectRevert(abi.encodeWithSignature("IncorrectHashForWinnerBids()"));
-        kandilli.proposeWinners{value: depositAmount}(
-            auctionId,
-            pwr.winnerBidIds,
-            keccak256(abi.encodePacked("x")),
-            pwr.totalBidAmount
-        );
-
-        bytes32 hash = keccak256(abi.encodePacked(pwr.winnerBidIds, pwr.vrfResult));
-
-        // Fail when posting winners with wrong deposit amount
-        vm.expectRevert(abi.encodeWithSignature("DepositAmountForWinnersProposalNotMet()"));
-        kandilli.proposeWinners{value: 1 wei}(auctionId, pwr.winnerBidIds, pwr.hash, pwr.totalBidAmount);
-
-        // Succeed to post winners and check balance
-        {
-            uint256 aliceBalanceBefore = alice.balance;
-            vm.prank(alice);
-            vm.expectEmit(true, false, false, true);
-            emit AuctionWinnersProposed(alice, auctionId, pwr.hash);
-            kandilli.proposeWinners{value: depositAmount}(auctionId, pwr.winnerBidIds, pwr.hash, pwr.totalBidAmount);
-            uint256 aliceBalanceAfter = alice.balance;
-            assertEq(aliceBalanceBefore - aliceBalanceAfter, depositAmount);
-        }
-
-        // Fail when posting winners a second time
-        {
-            vm.expectRevert(abi.encodeWithSignature("CannotProposeWinnersBeforeVRFSetOrWhenWinnersAlreadyPosted()"));
-            kandilli.proposeWinners{value: depositAmount}(auctionId, pwr.winnerBidIds, pwr.hash, pwr.totalBidAmount);
-        }
-        //uint256 totalPaidProposalBounty = kandilli.getAuctionWinnersProposalBounty(auctionId);
     }
 
-    function testClaimToken() public {
+    function testClaimToken(uint256 randomE) public {
         vm.prank(utils.getNamedUser("deployer"));
         kandilli.init();
 
-        uint256 randomE = 95275698087996319157942145645038655316366211765455253903736262480567932210200;
+        //uint256 randomE = 103009415513088537811461077255989014970206650234286429637298691460477702154002;
         uint256 auctionId = 1;
         uint256 startTime = kandilli.getAuctionStartTime(auctionId);
-        uint256 numBids = (randomE % maxTestBidCount) + 1; // Need at least 1 bid to claim token.
+        uint256 numBids = randomE % maxTestBidCount;
 
         uint32[] memory dummyWinnerIds = new uint32[](3);
         _sendBids(auctionId, numBids, startTime, randomE);
         _snuffCandle(auctionId, randomE, startTime);
+        ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, false);
 
-        vm.expectRevert(abi.encodeWithSignature("CannotClaimAuctionItemBeforeWinnersProposed()"));
-        kandilli.claimWinningBid(auctionId, bytes32(0), dummyWinnerIds, 0);
-
-        ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, true);
-
-        if (pwr.winnerBidIds.length == 0) {
-            // TODO: vm.assume
+        IKandilli.KandilState state = kandilli.getAuctionState(auctionId);
+        if (state == IKandilli.KandilState.EndedWithoutBids) {
+            // use vm.claim() when it's merged
             return;
         }
-        vm.expectRevert(abi.encodeWithSignature("CannotClaimAuctionItemBeforeChallengePeriodEnds()"));
-        kandilli.claimWinningBid(auctionId, pwr.hash, pwr.winnerBidIds, 0);
+        if (state != IKandilli.KandilState.AllBidsWon) {
+            vm.expectRevert(abi.encodeWithSignature("CannotClaimAuctionItemBeforeWinnersPosted()"));
+            kandilli.claimWinningBid(auctionId, bytes32(0), dummyWinnerIds, 0);
 
-        uint256 proposalTime = kandilli.getAuctionWinnerProposalTime(auctionId);
-        vm.warp(proposalTime + fraudChallengePeriod + 1);
+            pwr = _proposeWinners(auctionId, startTime, true);
 
-        vm.expectRevert(abi.encodeWithSignature("BidIdDoesntExist()"));
-        kandilli.claimWinningBid(auctionId, pwr.hash, pwr.winnerBidIds, pwr.winnerBidIds.length);
+            vm.expectRevert(abi.encodeWithSignature("CannotClaimAuctionItemBeforeChallengePeriodEnds()"));
+            kandilli.claimWinningBid(auctionId, pwr.hash, pwr.winnerBidIds, 0);
 
-        bytes32 dummyHash = keccak256(abi.encodePacked(dummyWinnerIds, pwr.vrfResult));
-        dummyWinnerIds[0] = 0;
-        dummyWinnerIds[1] = 4;
-        dummyWinnerIds[2] = 1;
-        vm.expectRevert(abi.encodeWithSignature("WinnerProposalDataDoesntHaveCorrectHash()"));
-        kandilli.claimWinningBid(auctionId, dummyHash, dummyWinnerIds, 0);
+            vm.warp(startTime + auctionTotalDuration + fraudChallengePeriod + 2);
 
-        dummyHash = keccak256(abi.encodePacked(dummyWinnerIds, pwr.vrfResult));
-        vm.expectRevert(abi.encodeWithSignature("WinnerProposalHashDoesntMatchPostedHash()"));
-        kandilli.claimWinningBid(auctionId, dummyHash, dummyWinnerIds, 0);
+            bytes32 dummyHash = keccak256(abi.encodePacked(dummyWinnerIds, pwr.vrfResult));
+            dummyWinnerIds[0] = 0;
+            dummyWinnerIds[1] = 4;
+            dummyWinnerIds[2] = 1;
+            vm.expectRevert(abi.encodeWithSignature("WinnerProposalDataDoesntHaveCorrectHash()"));
+            kandilli.claimWinningBid(auctionId, dummyHash, dummyWinnerIds, 0);
 
-        uint256 toClaimId = randomE % pwr.winnerBidIds.length;
+            dummyHash = keccak256(abi.encodePacked(dummyWinnerIds, pwr.vrfResult));
+            vm.expectRevert(abi.encodeWithSignature("WinnerProposalHashDoesntMatchPostedHash()"));
+            kandilli.claimWinningBid(auctionId, dummyHash, dummyWinnerIds, 0);
+        }
 
         address payable someOtherUser = utils.getNamedUser("someOtherUser");
         uint256 someOtherUserBeforeBalance = someOtherUser.balance;
         vm.prank(someOtherUser);
         vm.expectEmit(true, false, false, true);
-        emit WinningBidClaimed(someOtherUser, 1, pwr.winnerBidIds[toClaimId], pwr.bids[pwr.winnerBidIds[toClaimId]].bidder);
-        kandilli.claimWinningBid(auctionId, pwr.hash, pwr.winnerBidIds, toClaimId);
+        emit WinningBidClaimed(someOtherUser, 56, pwr.winnerBidIds[0], pwr.bids[pwr.winnerBidIds[0]].bidder);
+        kandilli.claimWinningBid(auctionId, pwr.hash, pwr.winnerBidIds, 0);
         uint256 claimBounty = kandilli.getClaimWinningBidBounty(auctionId);
 
         // Check if someOtherUser received right bounty.
         assertEq(claimBounty, someOtherUser.balance - someOtherUserBeforeBalance, "Received bounty for snuff is incorrect");
 
         // Check if bidder received token.
-        assertEq(mockAuctionableToken.balanceOf(pwr.bids[pwr.winnerBidIds[toClaimId]].bidder), 1, "Bidder did not receive token");
+        assertEq(mockAuctionableToken.balanceOf(pwr.bids[pwr.winnerBidIds[0]].bidder), 1, "Bidder did not receive token");
 
         // Check that someOtherUser did not receive any tokens.
         assertEq(mockAuctionableToken.balanceOf(someOtherUser), 0, "SomeOtherUser received tokens, when she shouldn't have");
 
         // Fail to claim tokens that are already claimed.
         vm.expectRevert(abi.encodeWithSignature("BidAlreadyClaimed()"));
-        kandilli.claimWinningBid(auctionId, pwr.hash, pwr.winnerBidIds, toClaimId);
+        kandilli.claimWinningBid(auctionId, pwr.hash, pwr.winnerBidIds, 0);
     }
 
     function testWithdrawBid(uint256 randomE) public {
@@ -466,8 +418,7 @@ contract KandilliTest is DSTest {
 
         ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, true);
 
-        uint256 proposalTime = kandilli.getAuctionWinnerProposalTime(auctionId);
-        vm.warp(proposalTime + fraudChallengePeriod + 1);
+        vm.warp(startTime + auctionTotalDuration + fraudChallengePeriod + 2);
 
         uint32[] memory dummyWinnerIds = new uint32[](3);
         bytes32 dummyHash = keccak256(abi.encodePacked(dummyWinnerIds, pwr.vrfResult));
@@ -508,19 +459,12 @@ contract KandilliTest is DSTest {
         vm.prank(utils.getNamedUser("deployer"));
         kandilli.init();
 
-        //uint256 randomE = 109687285319737427546864928704912123564621911379828527642653841607651681983601;
-
         uint256 auctionId = 1;
         uint256 startTime = kandilli.getAuctionStartTime(auctionId);
         uint256 depositAmount = kandilli.getAuctionRequiredWinnersProposalDeposit(auctionId);
-        uint256 numBids = randomE % maxTestBidCount;
-        _sendBids(auctionId, numBids, startTime, randomE);
+
+        _sendBids(auctionId, 100, startTime, randomE);
         _snuffCandle(auctionId, randomE, startTime);
-        IKandilli.KandilState state = kandilli.getAuctionState(auctionId);
-        if (state == IKandilli.KandilState.EndedWithoutBids) {
-            //TODO: vm.assume
-            return;
-        }
         ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, false);
         // Send more winner bids than total bid count
         {
@@ -535,11 +479,11 @@ contract KandilliTest is DSTest {
             uint256 chalBalBefore = challenger.balance;
             kandilli.challengeProposedWinners(auctionId, dummyWinnerIds, dummyHash, 1);
             uint256 chalBalAfter = challenger.balance;
-            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough bounty");
+            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough reward");
         }
 
         // Send duplicate winner bids
-        if (numBids > 2) {
+        {
             uint32[] memory dummyWinnerIds = new uint32[](3);
             dummyWinnerIds[0] = 5;
             dummyWinnerIds[1] = 3;
@@ -554,16 +498,24 @@ contract KandilliTest is DSTest {
             uint256 chalBalBefore = challenger.balance;
             kandilli.challengeProposedWinners(auctionId, dummyWinnerIds, dummyHash, 2);
             uint256 chalBalAfter = challenger.balance;
-            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough bounty");
+            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough reward");
         }
 
-        // Propose bigger winner index than total bid count.
-        if (pwr.numWinners > 0) {
-            uint32[] memory dummyWinnerIds = new uint32[](pwr.numWinners);
-            for (uint256 i = 0; i < pwr.numWinners; i++) {
-                dummyWinnerIds[i] = pwr.winnerBidIds[i];
+        // Send bigger winner index than total bid count.
+        {
+            uint32[] memory dummyWinnerIds = new uint32[](3);
+            uint256 z = 0;
+            for (uint256 i = 0; i < pwr.bids.length; i++) {
+                if (startTime + pwr.bids[i].timePassedFromStart < pwr.snuffTime) {
+                    dummyWinnerIds[z] = uint32(i);
+                    z++;
+                    if (z == 3) {
+                        break;
+                    }
+                }
             }
-            dummyWinnerIds[0] = uint32(pwr.bids.length);
+            uint32 toIncl = dummyWinnerIds[2];
+            dummyWinnerIds[2] = uint32(pwr.bids.length);
             bytes32 dummyHash = keccak256(abi.encodePacked(dummyWinnerIds, pwr.vrfResult));
             kandilli.proposeWinners{value: depositAmount}(auctionId, dummyWinnerIds, dummyHash, pwr.totalBidAmount);
             address challenger = utils.getNamedUser("challenger");
@@ -572,24 +524,24 @@ contract KandilliTest is DSTest {
             emit ChallengeSucceded(challenger, auctionId, 3);
             vm.prank(challenger);
             uint256 chalBalBefore = challenger.balance;
-            kandilli.challengeProposedWinners(auctionId, dummyWinnerIds, dummyHash, 0xFFFFFFFF);
+            kandilli.challengeProposedWinners(auctionId, dummyWinnerIds, dummyHash, toIncl);
             uint256 chalBalAfter = challenger.balance;
-            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough bounty");
+            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough reward");
         }
 
         // Send bid which is after snuff time
         {
-            uint32 bidAfterSnuff = 0xFFFFFFFF;
+            uint32[] memory dummyWinnerIds = new uint32[](3);
+            uint256 z = 0;
             for (uint256 i = 0; i < pwr.bids.length; i++) {
                 if (startTime + pwr.bids[i].timePassedFromStart >= pwr.snuffTime) {
-                    bidAfterSnuff = uint32(i);
+                    dummyWinnerIds[0] = uint32(i);
+                    break;
+                } else if (z < 2) {
+                    dummyWinnerIds[z + 1] = uint32(i);
+                    z++;
                 }
             }
-            if (bidAfterSnuff == 0xFFFFFFFF) {
-                return;
-            }
-            uint32[] memory dummyWinnerIds = new uint32[](1);
-            dummyWinnerIds[0] = bidAfterSnuff;
             bytes32 dummyHash = keccak256(abi.encodePacked(dummyWinnerIds, pwr.vrfResult));
             kandilli.proposeWinners{value: depositAmount}(auctionId, dummyWinnerIds, dummyHash, pwr.totalBidAmount);
             address challenger = utils.getNamedUser("challenger");
@@ -598,13 +550,13 @@ contract KandilliTest is DSTest {
             emit ChallengeSucceded(challenger, auctionId, 4);
             vm.prank(challenger);
             uint256 chalBalBefore = challenger.balance;
-            kandilli.challengeProposedWinners(auctionId, dummyWinnerIds, dummyHash, 0xFFFFFFFF);
+            kandilli.challengeProposedWinners(auctionId, dummyWinnerIds, dummyHash, 0);
             uint256 chalBalAfter = challenger.balance;
-            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough bounty");
+            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough reward");
         }
 
         // Send wrong total amount
-        if (pwr.totalBidAmount > 0) {
+        {
             kandilli.proposeWinners{value: depositAmount}(auctionId, pwr.winnerBidIds, pwr.hash, pwr.totalBidAmount - 1);
             address challenger = utils.getNamedUser("challenger");
             vm.expectEmit(true, false, false, true);
@@ -612,37 +564,38 @@ contract KandilliTest is DSTest {
             vm.prank(challenger);
             uint256 chalBalBefore = challenger.balance;
             kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIds, pwr.hash, 0xFFFFFFFF);
-            /*uint256 chalBalAfter = challenger.balance;
-            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough bounty");*/
+            uint256 chalBalAfter = challenger.balance;
+            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough reward");
         }
 
-        // Send bad list #1:  last 2 items swapped
-        if (pwr.numWinners > 1) {
-            uint32[] memory dummyWinnerIds = new uint32[](pwr.numWinners);
-            for (uint256 i = 0; i < pwr.numWinners; i++) {
-                dummyWinnerIds[i] = uint32(pwr.nBids[i].index);
+        // Send bid which is after snuff time
+        {
+            uint32[] memory dummyWinnerIds = new uint32[](3);
+            uint256 z = 0;
+            for (uint256 i = 0; i < pwr.bids.length; i++) {
+                if (startTime + pwr.bids[i].timePassedFromStart >= pwr.snuffTime) {
+                    dummyWinnerIds[0] = uint32(i);
+                    break;
+                } else if (z < 2) {
+                    dummyWinnerIds[z + 1] = uint32(i);
+                    z++;
+                }
             }
-
-            (dummyWinnerIds[pwr.numWinners - 1], dummyWinnerIds[pwr.numWinners - 2]) = (
-                dummyWinnerIds[pwr.numWinners - 2],
-                dummyWinnerIds[pwr.numWinners - 1]
-            );
-
             bytes32 dummyHash = keccak256(abi.encodePacked(dummyWinnerIds, pwr.vrfResult));
             kandilli.proposeWinners{value: depositAmount}(auctionId, dummyWinnerIds, dummyHash, pwr.totalBidAmount);
             address challenger = utils.getNamedUser("challenger");
 
             vm.expectEmit(true, false, false, true);
-            emit ChallengeSucceded(challenger, auctionId, 7);
+            emit ChallengeSucceded(challenger, auctionId, 4);
             vm.prank(challenger);
             uint256 chalBalBefore = challenger.balance;
-            kandilli.challengeProposedWinners(auctionId, dummyWinnerIds, dummyHash, 0xFFFFFFFF);
+            kandilli.challengeProposedWinners(auctionId, dummyWinnerIds, dummyHash, 0);
             uint256 chalBalAfter = challenger.balance;
-            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough bounty");
+            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough reward");
         }
 
-        // Send bad list #2: Swap first loser with last winner.
-        if (pwr.numWinners > numBids) {
+        // Send bad list #1
+        {
             uint32[] memory dummyWinnerIds = new uint32[](pwr.numWinners);
             for (uint256 i = 0; i < pwr.numWinners - 1; i++) {
                 dummyWinnerIds[i] = uint32(pwr.nBids[i].index);
@@ -658,20 +611,17 @@ contract KandilliTest is DSTest {
             uint256 chalBalBefore = challenger.balance;
             kandilli.challengeProposedWinners(auctionId, dummyWinnerIds, dummyHash, uint32(pwr.nBids[pwr.numWinners - 1].index));
             uint256 chalBalAfter = challenger.balance;
-            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough bounty");
+            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough reward");
         }
 
         // Try to repropose winners after successful fraud proof.
         _proposeWinners(auctionId, startTime, true);
-
-        vm.expectRevert(abi.encodeWithSignature("ChallengeFailedWinnerProposalIsCorrect()"));
-        kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIds, pwr.hash, 0xFFFFFFFF);
     }
 
-    function testChallengeWinnersProposalFailures(uint256 randomE) public {
+    function testChallengeWinnersProposalFailures() public {
         vm.prank(utils.getNamedUser("deployer"));
         kandilli.init();
-        //uint256 randomE = 4499550098297379889107541569912050205441959294117414913041628694394132133202;
+        uint256 randomE = 109474734054960200805824067259179825065867128620995869910341734992583483137846;
         uint256 auctionId = 1;
         uint256 startTime = kandilli.getAuctionStartTime(auctionId);
         uint256 depositAmount = kandilli.getAuctionRequiredWinnersProposalDeposit(auctionId);
@@ -689,13 +639,11 @@ contract KandilliTest is DSTest {
             kandilli.challengeProposedWinners(auctionId, dummyWinnerIds, keccak256(abi.encodePacked("x")), 0);
         }
 
-        IKandilli.KandilState state = kandilli.getAuctionState(auctionId);
-        if (state == IKandilli.KandilState.EndedWithoutBids) {
-            //TODO: vm.assume
+        ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, true);
+        if (numBids <= pwr.numWinners) {
+            // Use vm.assume when ready.
             return;
         }
-
-        ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, true);
         {
             bytes32 whash = keccak256(abi.encodePacked(pwr.winnerBidIds, "x"));
             vm.expectRevert(abi.encodeWithSignature("WinnerProposalDataDoesntHaveCorrectHash()"));
@@ -716,11 +664,6 @@ contract KandilliTest is DSTest {
         vm.expectRevert(abi.encodeWithSignature("CannotChallengeSelfProposal()"));
         kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIds, pwr.hash, 0);
 
-        if (pwr.numWinners == 0) {
-            // TODO: vm.assume
-            return;
-        }
-
         vm.startPrank(utils.getNamedUser("challenger"));
         vm.expectRevert(abi.encodeWithSignature("ChallengeFailedBidIdToIncludeAlreadyInWinnerList()"));
         kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIds, pwr.hash, pwr.winnerBidIds[0]);
@@ -732,8 +675,7 @@ contract KandilliTest is DSTest {
         kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIds, pwr.hash, 0xFFFFFFFF);
 
         // Fail to challenge after challenge period
-        uint256 proposalTime = kandilli.getAuctionWinnerProposalTime(auctionId);
-        vm.warp(proposalTime + fraudChallengePeriod + 1);
+        vm.warp(startTime + auctionTotalDuration + fraudChallengePeriod + 2);
         vm.expectRevert(abi.encodeWithSignature("CannotChallengeWinnersProposalAfterChallengePeriodIsOver()"));
         kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIds, pwr.hash, 0);
         vm.stopPrank();
@@ -807,35 +749,27 @@ contract KandilliTest is DSTest {
         }
     }
 
-    function testMoveFunds(uint256 randomE) public {
+    function testMoveFunds() public {
         vm.prank(utils.getNamedUser("deployer"));
         kandilli.init();
 
-        //uint256 randomE = 9665110016001107365961736065161865292364745277800064029878957631900366855401;
         uint256 auctionId = 1;
         uint256 startTime = kandilli.getAuctionStartTime(auctionId);
-        uint256 numBids = randomE % maxTestBidCount;
-
-        _sendBids(auctionId, numBids, startTime, randomE);
+        uint256 depositAmount = kandilli.getAuctionRequiredWinnersProposalDeposit(auctionId);
+        console.log(address(kandilli).balance);
+        _sendBids(auctionId, 1, startTime, randomE);
+        console.log(address(kandilli).balance);
         _snuffCandle(auctionId, randomE, startTime);
-        if (kandilli.getAuctionState(auctionId) == IKandilli.KandilState.EndedWithoutBids) {
-            //TODO: vm.assume
-            return;
-        }
-        vm.expectRevert(abi.encodeWithSignature("CannotMoveFundsBeforeWinnersProposed()"));
+        console.log(address(kandilli).balance);
+        vm.expectRevert(abi.encodeWithSignature("CannotMoveFundsBeforeWinnersPosted()"));
         kandilli.moveAuctionFundsToOwner(auctionId);
         ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, true);
+        console.log(address(kandilli).balance);
 
         vm.expectRevert(abi.encodeWithSignature("CannotMoveFundsBeforeChallengePeriodEnds()"));
         kandilli.moveAuctionFundsToOwner(auctionId);
 
-        uint256 proposalTime = kandilli.getAuctionWinnerProposalTime(auctionId);
-        vm.warp(proposalTime + fraudChallengePeriod + 1);
-
-        if (pwr.numWinners == 0) {
-            //TODO: vm.assume
-            return;
-        }
+        vm.warp(startTime + auctionTotalDuration + fraudChallengePeriod + 2);
 
         uint256 bidTotal = 0;
         vm.startPrank(utils.getNamedUser("bot"));
@@ -851,38 +785,17 @@ contract KandilliTest is DSTest {
                 kandilli.withdrawLostBid(auctionId, i, pwr.hash, pwr.winnerBidIds);
             }
         }
+        vm.prank(utils.getNamedUser("proposer"));
+        kandilli.claimWinnersProposalReward(auctionId);
 
-        uint256 totalPaidSnuffBounty = kandilli.getAuctionRetroSnuffBounty(auctionId);
-        uint256 totalPaidProposalBounty = kandilli.getAuctionWinnersProposalBounty(auctionId);
+        uint256 ownerBalanceBefore = utils.getNamedUser("deployer").balance;
+        kandilli.moveAuctionFundsToOwner(auctionId);
+        uint256 ownerBalanceAfter = utils.getNamedUser("deployer").balance;
 
-        if (totalPaidSnuffBounty > 0) {
-            vm.prank(utils.getNamedUser("snuffer"));
-            kandilli.claimSnuffBounty(auctionId);
-        }
-        if (totalPaidProposalBounty > 0) {
-            vm.prank(utils.getNamedUser("proposer"));
-            kandilli.claimWinnersProposalBounty(auctionId);
-        }
-
-        {
-            uint256 minB = kandilli.getAuctionMinimumBidAmount(auctionId);
-            uint256 totalPaidClaimBounty = pwr.winnerBidIds.length * minB;
-            if (pwr.totalBidAmount * (1 gwei) > totalPaidSnuffBounty + totalPaidProposalBounty + totalPaidClaimBounty) {
-                uint256 ownerBalanceBefore = utils.getNamedUser("deployer").balance;
-                kandilli.moveAuctionFundsToOwner(auctionId);
-                uint256 ownerBalanceAfter = utils.getNamedUser("deployer").balance;
-
-                assertEq(
-                    bidTotal - totalPaidClaimBounty - totalPaidSnuffBounty - totalPaidProposalBounty,
-                    ownerBalanceAfter - ownerBalanceBefore
-                );
-                assertEq(address(kandilli).balance, 0);
-            } else {
-                assertEq(address(kandilli).balance, 0);
-                vm.expectRevert(abi.encodeWithSignature("EthTransferFailedDestOrAmountZero()"));
-                kandilli.moveAuctionFundsToOwner(auctionId);
-            }
-        }
+        uint256 minB = kandilli.getAuctionMinimumBidAmount(auctionId);
+        uint256 totalPaidRew = pwr.winnerBidIds.length * minB;
+        assertEq(bidTotal - totalPaidRew, ownerBalanceAfter - ownerBalanceBefore);
+        assertEq(address(kandilli).balance, 0);
     }
 
     function _sendBids(
@@ -919,7 +832,7 @@ contract KandilliTest is DSTest {
         vm.expectEmit(true, false, false, true);
         emit AuctionStarted(auctionId + 1, startTime + auctionTotalDuration + 1);
         vm.expectEmit(true, false, false, false);
-        emit CandleSnuffed(snuffer, 1, bytes32(0));
+        emit CandleSnuffed(users[0], 1, bytes32(0));
 
         bytes32 requestId = kandilli.retroSnuffCandle(auctionId);
         vm.stopPrank();
@@ -935,17 +848,37 @@ contract KandilliTest is DSTest {
     ) private returns (ProposeWinnersResult memory result) {
         result.bids = kandilli.getAuctionBids(auctionId, 0, 0);
         result.snuffTime = kandilli.getAuctionCandleSnuffedTime(auctionId);
+        result.numWinners = kandilli.getAuctionMaxWinnerCount(auctionId);
+
+        if (result.bids.length <= result.numWinners) {
+            result.winnerBidIds = new uint32[](result.bids.length);
+            for (uint256 i = 0; i < result.bids.length; i++) {
+                result.winnerBidIds[i] = uint32(i);
+            }
+            return result;
+        }
         uint256 bidCount = 0;
+        uint256 bidAfterSnuffCount = 0;
 
         // Count bids sent before snuff time.
         for (uint256 i = 0; i < result.bids.length; i++) {
             if (startTime + result.bids[i].timePassedFromStart < result.snuffTime) {
                 bidCount++;
+            } else {
+                bidAfterSnuffCount++;
             }
         }
+
+        uint256 nBidSize = bidCount > result.numWinners ? bidCount : result.numWinners;
         //Bid with index to sort with for same amount
-        result.nBids = new IKandilli.KandilBidWithIndex[](bidCount);
+        result.nBids = new IKandilli.KandilBidWithIndex[](nBidSize);
+        //Collect bids after snuffTime to fill up nBids if there's bids before snuff is lower than maxNumWinners.
+        IKandilli.KandilBidWithIndex[] memory afterSnuffBids = new IKandilli.KandilBidWithIndex[](bidAfterSnuffCount);
         uint256 ni = 0;
+        uint256 zi = 0;
+        console.log("bidCount: ", bidCount);
+        console.log("bidAfterSnuffCount: ", bidAfterSnuffCount);
+        console.log("nBidSize: ", nBidSize);
         for (uint256 i = 0; i < result.bids.length; i++) {
             if (startTime + result.bids[i].timePassedFromStart < result.snuffTime) {
                 result.nBids[ni++] = IKandilli.KandilBidWithIndex(
@@ -955,29 +888,42 @@ contract KandilliTest is DSTest {
                     result.bids[i].isProcessed,
                     uint32(i)
                 );
+            } else {
+                afterSnuffBids[zi++] = IKandilli.KandilBidWithIndex(
+                    result.bids[i].bidder,
+                    result.bids[i].timePassedFromStart,
+                    result.bids[i].bidAmount,
+                    result.bids[i].isProcessed,
+                    uint32(i)
+                );
             }
         }
-        if (result.nBids.length > 1) {
-            result.nBids = Helpers.sortBids(result.nBids);
+        result.nBids = Helpers.sortBids(result.nBids);
+        // TODO: here we have an option to put randomness to the auction process. If we don't sort the afterSnuffBids,
+        // and there's not enough bids before snuff time, any bid after snuffTime will be the a winner
+        // regardless the bid amount. So someone can try to snipe the snufftime and win cheaply. This will only occur
+        // when there's less bids before snuff time than the maxNumWinners, so that means auction demand is low.
+        if (afterSnuffBids.length > 0) {
+            afterSnuffBids = Helpers.sortBids(afterSnuffBids);
         }
 
-        result.numWinners = kandilli.getAuctionMaxWinnerCount(auctionId);
+        if (result.nBids.length < result.numWinners) {
+            for (uint256 i = 0; i < afterSnuffBids.length && ni < result.numWinners; i++) {
+                result.nBids[ni++] = afterSnuffBids[i];
+            }
+        }
+
         result.vrfResult = kandilli.getAuctionVRF(auctionId);
-
         uint256 depositAmount = kandilli.getAuctionRequiredWinnersProposalDeposit(auctionId);
-
-        if (result.numWinners > result.nBids.length) {
-            result.numWinners = result.nBids.length;
-        }
 
         result.winnerBidIds = new uint32[](result.numWinners);
         result.totalBidAmount = 0;
         for (uint256 i = 0; i < result.numWinners; i++) {
             result.winnerBidIds[i] = uint32(result.nBids[i].index);
-            result.totalBidAmount += uint64(result.nBids[i].bidAmount);
+            result.totalBidAmount += uint256(result.nBids[i].bidAmount);
         }
-
         result.hash = keccak256(abi.encodePacked(result.winnerBidIds, result.vrfResult));
+
         if (callPropose) {
             vm.deal(utils.getNamedUser("proposer"), depositAmount);
             vm.prank(utils.getNamedUser("proposer"));

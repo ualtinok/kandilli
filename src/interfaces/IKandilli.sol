@@ -10,7 +10,8 @@ interface IKandilli {
         Running,
         WaitingVRFResult,
         VRFSet,
-        WinnersPosted
+        WinnersProposed,
+        EndedWithoutBids
     }
 
     /**
@@ -23,7 +24,7 @@ interface IKandilli {
         address payable bidder; // address of the bidder
         uint32 timePassedFromStart; // time passed from startTime
         uint64 bidAmount; // bid value in gwei
-        bool isProcessed;
+        bool isProcessed; // is the winning bid claimed or losing bid withdrawn
     }
 
     /**
@@ -43,11 +44,21 @@ interface IKandilli {
      *      If proven fraud, proposal sender loses deposit to challenger.
      */
     struct KandilWinnersProposal {
-        uint256 reward;
         bytes32 keccak256Hash;
+        uint64 bounty;
+        uint64 timestamp;
+        uint64 totalBidAmount;
         uint32 winnerCount;
         address payable sender;
+        bool isBountyClaimed;
+    }
+
+    struct KandilSnuff {
+        address payable sender;
+        uint64 bounty;
+        uint64 potentialBounty;
         uint64 timestamp;
+        bool isBountyClaimed;
     }
 
     /**
@@ -57,7 +68,7 @@ interface IKandilli {
      * @param retroSnuffGas: Approximate gas cost of a retroSnuff call.
      * @param winnersProposalGas: Approximate gas cost of a winners proposal call.
      * @param auctionTotalDuration: Total duration in seconds. (not timestamp, this + startTime is used as end timestamp)
-     * @param numWinnersPerAuction: Desired number of winners per auction.
+     * @param maxWinnersPerAuction: Desired number of winners per auction.
      * @param maxBountyMultiplier: Bounty multiplier, every 12 seconds bounties increase by 0.1 base
      *      bounty up to this multiplier.
      * @param snuffPercentage: Percentage of candle snuff period in the total duration of auction.
@@ -72,7 +83,7 @@ interface IKandilli {
         uint32 retroSnuffGas;
         uint32 winnersProposalGas;
         uint32 auctionTotalDuration;
-        uint32 numWinnersPerAuction;
+        uint32 maxWinnersPerAuction;
         uint8 maxBountyMultiplier;
         uint8 snuffPercentage;
         bool snuffRequiresSendingLink;
@@ -81,7 +92,6 @@ interface IKandilli {
     /**
      * @notice Current state of the auction
      * @param vrfResult: VRF result returned from Chainlink
-     * @param paidSnuffReward: Amount paid to snuffer for calling VRF func.
      * @param startTime: Auction start time as 64bit timestamp
      * @param minBidAmount: The minimum bid amount. It should approximately follow auctionable settle gas price + %10-%15.
      * @param targetBaseFee: Basefee we set at the auction creation based on observed base fees during auctionable settle calls.
@@ -95,15 +105,15 @@ interface IKandilli {
      */
     struct Kandil {
         uint256 vrfResult;
-        uint256 paidSnuffReward;
         uint64 startTime;
         uint64 minBidAmount;
         uint64 targetBaseFee;
         uint32 vrfSetTime;
+        KandilState auctionState;
         KandilAuctionSettings settings;
         KandilBid[] bids;
-        KandilState auctionState;
         KandilWinnersProposal winnersProposal;
+        KandilSnuff snuff;
     }
 
     /// ---------------------------
@@ -118,19 +128,23 @@ interface IKandilli {
 
     event AuctionWinnersProposed(address indexed sender, uint256 auctionId, bytes32 hash);
 
-    event VRFRequested(address indexed sender, uint256 auctionId, bytes32 requestId);
+    event CandleSnuffed(address indexed sender, uint256 auctionId, bytes32 requestId);
 
     event WinningBidClaimed(address indexed sender, uint256 auctionId, uint256 bidId, address claimedto);
 
     event LostBidWithdrawn(uint256 auctionId, uint256 bidId, address sender);
 
-    event WinnersProposalRewardClaimed(uint256 auctionId, address sender, uint256 amount);
+    event WinnersProposalBountyClaimed(address indexed sender, uint256 auctionId, uint256 amount);
+
+    event SnuffBountyClaimed(address indexed sender, uint256 auctionId, uint256 amount);
 
     event ChallengeSucceded(address indexed sender, uint256 auctionId, uint256 reason);
 
     /// ---------------------------
     /// ------- ERRORS  -----------
     /// ---------------------------
+
+    error AlreadyInitialized();
 
     error BidWithPrecisionLowerThanGwei();
 
@@ -150,7 +164,7 @@ interface IKandilli {
 
     error DepositAmountForWinnersProposalNotMet();
 
-    error CannotClaimAuctionItemBeforeWinnersPosted();
+    error CannotClaimAuctionItemBeforeWinnersProposed();
 
     error CannotClaimAuctionItemBeforeChallengePeriodEnds();
 
@@ -190,15 +204,15 @@ interface IKandilli {
 
     error LinkDepositFailed();
 
-    error CannotClaimWinnersProposalRewardIfNotProposer();
+    error CannotClaimWinnersProposalBountyIfNotProposer();
 
-    error CannotClaimWinnersProposalRewardBeforeChallengePeriodIsOver();
+    error CannotClaimWinnersProposalBountyBeforeChallengePeriodIsOver();
 
-    error CannotClaimWinnersProposalRewardBeforePosted();
+    error CannotClaimWinnersProposalBountyBeforePosted();
 
     error CannotWithdrawLostBidBeforeChallengePeriodEnds();
 
-    error CannotWithdrawLostBidBeforeWinnersPosted();
+    error CannotWithdrawLostBidBeforeWinnersProposed();
 
     error CannotWithdrawLostBidIfIncludedInWinnersProposal();
 
@@ -214,6 +228,26 @@ interface IKandilli {
 
     error ChallengeFailedBidIdToIncludeIsNotInBidList();
 
+    error CannotMoveFundsBeforeWinnersProposed();
+
+    error CannotMoveFundsBeforeChallengePeriodEnds();
+
+    error BidIdDoesntExist();
+
+    error CannotClaimSnuffBountyBeforeWinnersProposed();
+
+    error CannotClaimSnuffBountyBeforeIfNotSnuffer();
+
+    error CannotClaimSnuffBountyBeforeChallengePeriodIsOver();
+
+    error WinnersProposalBountyAlreadyClaimed();
+
+    error WinnersProposalBountyIsZero();
+
+    error SnuffBountyAlreadyClaimed();
+
+    error SnuffBountyIsZero();
+
     /// ---------------------------
     /// --- EXTERNAL METHODS  -----
     /// ---------------------------
@@ -227,7 +261,8 @@ interface IKandilli {
     function proposeWinners(
         uint256 _auctionId,
         uint32[] calldata _winnerBidIds,
-        bytes32 _hash
+        bytes32 _hash,
+        uint64 _totalBidAmount
     ) external payable;
 
     function challengeProposedWinners(
@@ -237,7 +272,9 @@ interface IKandilli {
         uint32 _bidIdToInclude
     ) external;
 
-    function claimWinnersProposalReward(uint256 _auctionId) external;
+    function claimWinnersProposalBounty(uint256 _auctionId) external;
+
+    function claimSnuffBounty(uint256 _auctionId) external;
 
     function withdrawLostBid(
         uint256 _auctionId,
@@ -248,13 +285,14 @@ interface IKandilli {
 
     function claimWinningBid(
         uint256 _auctionId,
-        uint256 _bidId,
         bytes32 _hash,
         uint32[] calldata _winnerBidIds,
         uint256 _winnerBidIdIndex
     ) external;
 
     function retroSnuffCandle(uint256 _auctionId) external returns (bytes32);
+
+    function moveAuctionFundsToOwner(uint256 _auctionId) external;
 
     function getAuctionBids(
         uint256 _auctionId,
@@ -272,7 +310,7 @@ interface IKandilli {
 
     function getAuctionRetroSnuffBounty(uint256 _auctionId) external view returns (uint256 r);
 
-    function getAuctionWinnerCount(uint256 _auctionId) external view returns (uint256);
+    function getAuctionMaxWinnerCount(uint256 _auctionId) external view returns (uint256);
 
     function getAuctionVRF(uint256 _auctionId) external view returns (uint256);
 
