@@ -16,26 +16,33 @@ interface IKandilli {
 
     /**
      * @notice Here we're using very tight packing with high gas optimization, below struct fits into
-     *      a single storage slot (32 bytes). For this we use timestamp as uint32 and
-     *      this is set to block.timestamp - startTime. For bidAmount we use gwei denomination by
-     *      restricting bids to not use lower than a gwei precision.
+     *      a single storage slot (32 bytes). To be able to fit all data in single slot:
+     *      - Instead of using uint256 timestamp, we use an int32 which value is seconds since auction start which
+     *      is also used as a mark to declare if the bid claimed or withdrawn (when its set to -1).
+     *      - Instead of using uint256 for bidAmount we use uint64 and limit bids to gwei precision.
+     * @param bidder: address of the bidder
+     * @param timePassedFromStart: seconds passed from start time.
+     *      If set to -1, it's either claimed or withdrawn after auction ends. (isProcessed)
+     * @param bidAmount: bid value in gwei
      */
     struct KandilBid {
-        address payable bidder; // address of the bidder
-        uint32 timePassedFromStart; // time passed from startTime
-        uint64 bidAmount; // bid value in gwei
-        bool isProcessed; // is the winning bid claimed or losing bid withdrawn
+        address payable bidder;
+        int32 timePassedFromStart;
+        uint64 bidAmount;
     }
 
     /**
      * @notice: KandilBid struct + index in the bids array so that we can easily sort bids
-     *      and same value bids will be sorted by index.
+     *      and same value bids will be sorted by index. Only used at challenge time and in memory.
+     * @param bidder: address of the bidder
+     * @param timePassedFromStart: seconds passed from start time.
+     *      If set to -1, it's either claimed or withdrawn after auction ends. (isProcessed)
+     * @param bidAmount: bid value in gwei
      */
     struct KandilBidWithIndex {
-        address payable bidder; // address of the bidder
-        uint32 timePassedFromStart; // time passed from startTime
-        uint64 bidAmount; // bid value in gwei
-        bool isProcessed;
+        address payable bidder;
+        int32 timePassedFromStart;
+        uint64 bidAmount;
         uint32 index;
     }
 

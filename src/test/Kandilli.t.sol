@@ -584,7 +584,7 @@ contract KandilliTest is DSTest {
         {
             uint32 bidAfterSnuff = 0xFFFFFFFF;
             for (uint256 i = 0; i < pwr.bids.length; i++) {
-                if (startTime + pwr.bids[i].timePassedFromStart >= pwr.snuffTime) {
+                if (startTime + uint256(uint32(pwr.bids[i].timePassedFromStart)) >= pwr.snuffTime) {
                     bidAfterSnuff = uint32(i);
                 }
             }
@@ -744,40 +744,40 @@ contract KandilliTest is DSTest {
 
     function testSort() public {
         IKandilli.KandilBidWithIndex[] memory nBids = new IKandilli.KandilBidWithIndex[](15);
-        nBids[0] = IKandilli.KandilBidWithIndex(users[0], 0, 100, false, 0);
-        nBids[1] = IKandilli.KandilBidWithIndex(users[1], 0, 150, false, 1);
-        nBids[2] = IKandilli.KandilBidWithIndex(users[2], 0, 150, false, 2);
-        nBids[3] = IKandilli.KandilBidWithIndex(users[3], 0, 150, false, 3);
-        nBids[4] = IKandilli.KandilBidWithIndex(users[4], 0, 150, false, 4);
-        nBids[5] = IKandilli.KandilBidWithIndex(users[5], 0, 500, false, 9);
-        nBids[6] = IKandilli.KandilBidWithIndex(users[6], 0, 500, false, 6);
-        nBids[7] = IKandilli.KandilBidWithIndex(users[7], 0, 1500, false, 7);
-        nBids[8] = IKandilli.KandilBidWithIndex(users[8], 0, 100, false, 8);
-        nBids[9] = IKandilli.KandilBidWithIndex(users[9], 0, 500, false, 5);
-        nBids[10] = IKandilli.KandilBidWithIndex(users[10], 0, 120, false, 10);
-        nBids[11] = IKandilli.KandilBidWithIndex(users[11], 0, 100, false, 13);
-        nBids[12] = IKandilli.KandilBidWithIndex(users[12], 0, 100, false, 11);
-        nBids[13] = IKandilli.KandilBidWithIndex(users[12], 0, 100, false, 12);
-        nBids[14] = IKandilli.KandilBidWithIndex(users[12], 0, 1501, false, 14);
+        nBids[0] = IKandilli.KandilBidWithIndex(users[0], 0, 100, 0);
+        nBids[1] = IKandilli.KandilBidWithIndex(users[1], 0, 150, 1);
+        nBids[2] = IKandilli.KandilBidWithIndex(users[2], 0, 150, 2);
+        nBids[3] = IKandilli.KandilBidWithIndex(users[3], 0, 150, 3);
+        nBids[4] = IKandilli.KandilBidWithIndex(users[4], 0, 150, 4);
+        nBids[5] = IKandilli.KandilBidWithIndex(users[5], 0, 500, 9);
+        nBids[6] = IKandilli.KandilBidWithIndex(users[6], 0, 500, 6);
+        nBids[7] = IKandilli.KandilBidWithIndex(users[7], 0, 1500, 7);
+        nBids[8] = IKandilli.KandilBidWithIndex(users[8], 0, 100, 8);
+        nBids[9] = IKandilli.KandilBidWithIndex(users[9], 0, 500, 5);
+        nBids[10] = IKandilli.KandilBidWithIndex(users[10], 0, 120, 10);
+        nBids[11] = IKandilli.KandilBidWithIndex(users[11], 0, 100, 13);
+        nBids[12] = IKandilli.KandilBidWithIndex(users[12], 0, 100, 11);
+        nBids[13] = IKandilli.KandilBidWithIndex(users[12], 0, 100, 12);
+        nBids[14] = IKandilli.KandilBidWithIndex(users[12], 0, 1501, 14);
 
         nBids = Helpers.sortBids(nBids);
 
         IKandilli.KandilBidWithIndex[] memory expectedBids = new IKandilli.KandilBidWithIndex[](15);
-        expectedBids[0] = IKandilli.KandilBidWithIndex(users[12], 0, 1501, false, 14);
-        expectedBids[1] = IKandilli.KandilBidWithIndex(users[7], 0, 1500, false, 7);
-        expectedBids[2] = IKandilli.KandilBidWithIndex(users[9], 0, 500, false, 5);
-        expectedBids[3] = IKandilli.KandilBidWithIndex(users[6], 0, 500, false, 6);
-        expectedBids[4] = IKandilli.KandilBidWithIndex(users[5], 0, 500, false, 9);
-        expectedBids[5] = IKandilli.KandilBidWithIndex(users[1], 0, 150, false, 1);
-        expectedBids[6] = IKandilli.KandilBidWithIndex(users[2], 0, 150, false, 2);
-        expectedBids[7] = IKandilli.KandilBidWithIndex(users[3], 0, 150, false, 3);
-        expectedBids[8] = IKandilli.KandilBidWithIndex(users[4], 0, 150, false, 4);
-        expectedBids[9] = IKandilli.KandilBidWithIndex(users[10], 0, 120, false, 10);
-        expectedBids[10] = IKandilli.KandilBidWithIndex(users[0], 0, 100, false, 0);
-        expectedBids[11] = IKandilli.KandilBidWithIndex(users[8], 0, 100, false, 8);
-        expectedBids[12] = IKandilli.KandilBidWithIndex(users[12], 0, 100, false, 11);
-        expectedBids[13] = IKandilli.KandilBidWithIndex(users[12], 0, 100, false, 12);
-        expectedBids[14] = IKandilli.KandilBidWithIndex(users[11], 0, 100, false, 13);
+        expectedBids[0] = IKandilli.KandilBidWithIndex(users[12], 0, 1501, 14);
+        expectedBids[1] = IKandilli.KandilBidWithIndex(users[7], 0, 1500, 7);
+        expectedBids[2] = IKandilli.KandilBidWithIndex(users[9], 0, 500, 5);
+        expectedBids[3] = IKandilli.KandilBidWithIndex(users[6], 0, 500, 6);
+        expectedBids[4] = IKandilli.KandilBidWithIndex(users[5], 0, 500, 9);
+        expectedBids[5] = IKandilli.KandilBidWithIndex(users[1], 0, 150, 1);
+        expectedBids[6] = IKandilli.KandilBidWithIndex(users[2], 0, 150, 2);
+        expectedBids[7] = IKandilli.KandilBidWithIndex(users[3], 0, 150, 3);
+        expectedBids[8] = IKandilli.KandilBidWithIndex(users[4], 0, 150, 4);
+        expectedBids[9] = IKandilli.KandilBidWithIndex(users[10], 0, 120, 10);
+        expectedBids[10] = IKandilli.KandilBidWithIndex(users[0], 0, 100, 0);
+        expectedBids[11] = IKandilli.KandilBidWithIndex(users[8], 0, 100, 8);
+        expectedBids[12] = IKandilli.KandilBidWithIndex(users[12], 0, 100, 11);
+        expectedBids[13] = IKandilli.KandilBidWithIndex(users[12], 0, 100, 12);
+        expectedBids[14] = IKandilli.KandilBidWithIndex(users[11], 0, 100, 13);
 
         assertEq(keccak256(abi.encode(nBids)), keccak256(abi.encode(expectedBids)));
     }
@@ -849,7 +849,7 @@ contract KandilliTest is DSTest {
         vm.stopPrank();
         IKandilli.KandilBid[] memory bids = kandilli.getAuctionBids(auctionId, 0, 0);
         for (uint256 i = 0; i < bids.length; i++) {
-            if (!bids[i].isProcessed) {
+            if (bids[i].timePassedFromStart != -1) {
                 vm.prank(bids[i].bidder);
                 kandilli.withdrawLostBid(auctionId, i, pwr.hash, pwr.winnerBidIds);
             }
@@ -917,7 +917,7 @@ contract KandilliTest is DSTest {
         vm.stopPrank();
         bids = kandilli.getAuctionBids(auctionId, 0, 0);
         for (uint256 i = 0; i < bids.length; i++) {
-            if (!bids[i].isProcessed) {
+            if (bids[i].timePassedFromStart != -1) {
                 vm.prank(bids[i].bidder);
                 kandilli.withdrawLostBid(auctionId, i, pwr.hash, pwr.winnerBidIds);
             }
@@ -990,7 +990,7 @@ contract KandilliTest is DSTest {
 
         // Count bids sent before snuff time.
         for (uint256 i = 0; i < result.bids.length; i++) {
-            if (startTime + result.bids[i].timePassedFromStart < result.snuffTime) {
+            if (startTime + uint256(uint32(result.bids[i].timePassedFromStart)) < result.snuffTime) {
                 bidCount++;
             }
         }
@@ -998,12 +998,11 @@ contract KandilliTest is DSTest {
         result.nBids = new IKandilli.KandilBidWithIndex[](bidCount);
         uint256 ni = 0;
         for (uint256 i = 0; i < result.bids.length; i++) {
-            if (startTime + result.bids[i].timePassedFromStart < result.snuffTime) {
+            if (startTime + uint256(uint32(result.bids[i].timePassedFromStart)) < result.snuffTime) {
                 result.nBids[ni++] = IKandilli.KandilBidWithIndex(
                     result.bids[i].bidder,
                     result.bids[i].timePassedFromStart,
                     result.bids[i].bidAmount,
-                    result.bids[i].isProcessed,
                     uint32(i)
                 );
             }

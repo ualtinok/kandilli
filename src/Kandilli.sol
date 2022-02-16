@@ -119,9 +119,8 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         currentAuction.bids.push(
             KandilBid({
                 bidder: payable(msg.sender),
-                timePassedFromStart: uint32(uint64(block.timestamp) - uint64(currentAuction.startTime)),
-                bidAmount: uint64(msg.value / (1 gwei)),
-                isProcessed: false
+                timePassedFromStart: int32(uint32(uint64(block.timestamp) - uint64(currentAuction.startTime))),
+                bidAmount: uint64(msg.value / (1 gwei))
             })
         );
 
@@ -157,7 +156,9 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         // @dev Here we convert the bid amount into gwei
         currentAuction.bids[_bidIndex].bidAmount += uint64(msg.value / (1 gwei));
         // @dev Every time a bidder increase bid, timestamp is reset to current time.
-        currentAuction.bids[_bidIndex].timePassedFromStart = uint32(uint64(block.timestamp) - uint64(currentAuction.startTime));
+        currentAuction.bids[_bidIndex].timePassedFromStart = int32(
+            uint32(uint64(block.timestamp) - uint64(currentAuction.startTime))
+        );
 
         emit AuctionBidIncrease(msg.sender, _auctionId, _bidIndex, msg.value);
     }
@@ -346,7 +347,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         KandilBid storage bidToInclude = currentAuction.bids[inclIndex];
         if (
             _bidIndexToInclude != 0xFFFFFFFF &&
-            uint256(currentAuction.startTime) + uint256(bidToInclude.timePassedFromStart) >
+            uint256(currentAuction.startTime) + uint256(uint32(bidToInclude.timePassedFromStart)) >
             getAuctionCandleSnuffedTime(_auctionId)
         ) {
             revert ChallengeFailedBidToIncludeIsNotBeforeSnuffTime();
@@ -366,18 +367,15 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
             KandilBid storage bid = currentAuction.bids[_winnerBidIndexes[i]];
             // Check if any bid in the proposal is sent after the snuff time.
-            if (uint256(currentAuction.startTime) + uint256(bid.timePassedFromStart) > getAuctionCandleSnuffedTime(_auctionId)) {
+            if (
+                uint256(currentAuction.startTime) + uint256(uint32(bid.timePassedFromStart)) >
+                getAuctionCandleSnuffedTime(_auctionId)
+            ) {
                 return _challengeSucceeded(currentAuction, _auctionId, 4);
             }
 
             totalBidAmount += bid.bidAmount;
-            nBids[i] = KandilBidWithIndex(
-                bid.bidder,
-                bid.timePassedFromStart,
-                bid.bidAmount,
-                bid.isProcessed,
-                _winnerBidIndexes[i]
-            );
+            nBids[i] = KandilBidWithIndex(bid.bidder, bid.timePassedFromStart, bid.bidAmount, _winnerBidIndexes[i]);
         }
 
         if (totalBidAmount != currentAuction.winnersProposal.totalBidAmount) {
@@ -389,7 +387,6 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
                 bidToInclude.bidder,
                 bidToInclude.timePassedFromStart,
                 bidToInclude.bidAmount,
-                bidToInclude.isProcessed,
                 _bidIndexToInclude
             );
         }
@@ -511,7 +508,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             }
         }
 
-        if (currentAuction.bids[_bidIndex].isProcessed) {
+        if (currentAuction.bids[_bidIndex].timePassedFromStart == -1) {
             revert CannotWithdrawAlreadyWithdrawnBid();
         }
 
@@ -519,7 +516,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert CannotWithdrawBidIfNotSender();
         }
 
-        currentAuction.bids[_bidIndex].isProcessed = true;
+        currentAuction.bids[_bidIndex].timePassedFromStart = -1;
 
         uint256 amount = uint256(currentAuction.bids[_bidIndex].bidAmount) * (1 gwei);
         _safeTransferETHWithFallback(msg.sender, amount);
@@ -567,11 +564,11 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert WinnerProposalHashDoesntMatchPostedHash();
         }
 
-        if (currentAuction.bids[bidIndex].isProcessed) {
+        if (currentAuction.bids[bidIndex].timePassedFromStart == -1) {
             revert BidAlreadyClaimed();
         }
 
-        currentAuction.bids[bidIndex].isProcessed = true;
+        currentAuction.bids[bidIndex].timePassedFromStart = -1;
 
         auctionable.settle(
             currentAuction.bids[bidIndex].bidder,
