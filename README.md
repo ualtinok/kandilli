@@ -1,14 +1,19 @@
+### !!! Untested - DO NOT USE IN PRODUCTION !!!
 
-# WIP: Kandilli - Optimistic Candle Auctions
-
-### !!! Untested - Unaudited - DO NOT USE !!!
-
+#[WIP]Kandilli - Optimistic Candle Auctions
 
 ## What
 
 ## Why
 
 ## How
+
+
+
+# Feature extensions:
+- [ ] Lifetime limit for number auctioned items.
+- [ ] Dynamic auction item count mechanism. (min/max) items per auction. Change based on previous auction sales.
+- [ ] Optional basic snuff mechanism using block.difficulty instead of VRF. (more relevant after the merge as block.difficulty becomes mixHash)
 
 
 ## Development

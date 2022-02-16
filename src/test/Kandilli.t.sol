@@ -30,13 +30,15 @@ contract KandilliTest is DSTest {
     using Strings for uint256;
 
     event AuctionStarted(uint256 auctionId, uint256 startTime);
-    event AuctionBid(address indexed sender, uint256 auctionId, uint256 bidId, uint256 value);
-    event AuctionBidIncrease(address indexed sender, uint256 auctionId, uint256 bidId, uint256 value);
-    event ChallengeSucceded(address indexed sender, uint256 auctionId, uint256 reason);
-    event AuctionWinnersProposed(address indexed sender, uint256 auctionId, bytes32 hash);
-    event LostBidWithdrawn(uint256 auctionId, uint256 bidId, address sender);
-    event CandleSnuffed(address indexed sender, uint256 auctionId, bytes32 requestId);
-    event WinningBidClaimed(address indexed sender, uint256 auctionId, uint256 bidId, address claimedto);
+    event AuctionBid(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId, uint256 value);
+    event AuctionBidIncrease(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId, uint256 value);
+    event AuctionWinnersProposed(address indexed sender, uint256 indexed auctionId, bytes32 hash);
+    event CandleSnuffed(address indexed sender, uint256 indexed auctionId, bytes32 requestId);
+    event WinningBidClaimed(address indexed sender, uint256 indexed auctionId, uint256 bidId, address claimedto);
+    event LostBidWithdrawn(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId);
+    event WinnersProposalBountyClaimed(address indexed sender, uint256 indexed auctionId, uint256 amount);
+    event SnuffBountyClaimed(address indexed sender, uint256 indexed auctionId, uint256 amount);
+    event ChallengeSucceded(address indexed sender, uint256 indexed auctionId, uint256 reason);
     event Approval(address indexed owner, address indexed spender, uint256 value);
 
     Vm internal immutable vm = Vm(HEVM_ADDRESS);
@@ -388,11 +390,11 @@ contract KandilliTest is DSTest {
         //uint256 totalPaidProposalBounty = kandilli.getAuctionWinnersProposalBounty(auctionId);
     }
 
-    function testClaimToken() public {
+    function testClaimToken(uint256 randomE) public {
         vm.prank(utils.getNamedUser("deployer"));
         kandilli.init();
 
-        uint256 randomE = 95275698087996319157942145645038655316366211765455253903736262480567932210200;
+        //uint256 randomE = 95275698087996319157942145645038655316366211765455253903736262480567932210200;
         uint256 auctionId = 1;
         uint256 startTime = kandilli.getAuctionStartTime(auctionId);
         uint256 numBids = (randomE % maxTestBidCount) + 1; // Need at least 1 bid to claim token.
@@ -489,7 +491,8 @@ contract KandilliTest is DSTest {
 
         uint256 beforeBalance = pwr.nBids[pwr.numWinners + 1].bidder.balance;
 
-        emit LostBidWithdrawn(3, pwr.nBids[pwr.numWinners].index, pwr.nBids[pwr.numWinners + 1].bidder);
+        vm.expectEmit(true, true, false, true);
+        emit LostBidWithdrawn(pwr.nBids[pwr.numWinners + 1].bidder, auctionId, pwr.nBids[pwr.numWinners].index);
         vm.prank(pwr.nBids[pwr.numWinners + 1].bidder);
         kandilli.withdrawLostBid(auctionId, pwr.nBids[pwr.numWinners + 1].index, pwr.hash, pwr.winnerBidIds);
         uint256 afterBalance = pwr.nBids[pwr.numWinners + 1].bidder.balance;
@@ -885,6 +888,54 @@ contract KandilliTest is DSTest {
         }
     }
 
+    function testFullAuction() public {
+        vm.prank(utils.getNamedUser("deployer"));
+        kandilli.init();
+
+        uint256 auctionId = 1;
+        uint256 startTime = kandilli.getAuctionStartTime(auctionId);
+        uint256 numBids = 500;
+
+        _sendBids(auctionId, numBids, startTime, randomE);
+        IKandilli.KandilBid[] memory bids = kandilli.getAuctionBids(auctionId, 0, 0);
+
+        for (uint256 i = 0; i < bids.length; i++) {
+            vm.prank(bids[i].bidder);
+            kandilli.increaseAmountOfBid{value: (1 gwei)}(auctionId, i);
+        }
+        _snuffCandle(auctionId, randomE, startTime);
+
+        ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, true);
+
+        uint256 proposalTime = kandilli.getAuctionWinnerProposalTime(auctionId);
+        vm.warp(proposalTime + fraudChallengePeriod + 1);
+
+        vm.startPrank(utils.getNamedUser("bot"));
+        for (uint256 i = 0; i < pwr.winnerBidIds.length; i++) {
+            kandilli.claimWinningBid(auctionId, pwr.hash, pwr.winnerBidIds, i);
+        }
+        vm.stopPrank();
+        bids = kandilli.getAuctionBids(auctionId, 0, 0);
+        for (uint256 i = 0; i < bids.length; i++) {
+            if (!bids[i].isProcessed) {
+                vm.prank(bids[i].bidder);
+                kandilli.withdrawLostBid(auctionId, i, pwr.hash, pwr.winnerBidIds);
+            }
+        }
+
+        uint256 totalPaidSnuffBounty = kandilli.getAuctionRetroSnuffBounty(auctionId);
+        uint256 totalPaidProposalBounty = kandilli.getAuctionWinnersProposalBounty(auctionId);
+
+        if (totalPaidSnuffBounty > 0) {
+            vm.prank(utils.getNamedUser("snuffer"));
+            kandilli.claimSnuffBounty(auctionId);
+        }
+        if (totalPaidProposalBounty > 0) {
+            vm.prank(utils.getNamedUser("proposer"));
+            kandilli.claimWinnersProposalBounty(auctionId);
+        }
+    }
+
     function _sendBids(
         uint256 auctionId,
         uint256 bidCountToSend,
@@ -897,7 +948,7 @@ contract KandilliTest is DSTest {
             address bidder = utils.getNamedUser(string(abi.encodePacked("bidder", i.toString())));
             vm.deal(bidder, 1 ether);
             vm.prank(bidder);
-            vm.expectEmit(true, false, false, true);
+            vm.expectEmit(true, true, false, true);
             emit AuctionBid(bidder, auctionId, i, ((rand % 1000000) + 200000) * 100 gwei);
             kandilli.addBidToAuction{value: ((rand % 1000000) + 200000) * 100 gwei}(auctionId);
         }

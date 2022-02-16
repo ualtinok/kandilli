@@ -23,7 +23,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
     IWETH immutable weth;
 
-    IAuctionable internal auctionToken;
+    IAuctionable internal auctionable;
 
     bytes32 internal keyHash;
 
@@ -42,7 +42,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
     bool initialized;
 
     /**
-     * @param _auctionToken Any token that implements IAuctionable
+     * @param _auctionable Any token that implements IAuctionable
      * @param _initialSettings Initial KandilHouseSettings
      * @param _initBaseFeeObservations Initial base fee observations
      * @param _weth Wrapper Eth token address
@@ -52,7 +52,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
      * @param _keyHash Chainlink VRF key hash
      */
     constructor(
-        IAuctionable _auctionToken,
+        IAuctionable _auctionable,
         KandilAuctionSettings memory _initialSettings,
         uint32[] memory _initBaseFeeObservations,
         address _weth,
@@ -61,7 +61,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         uint256 _vrfFee,
         bytes32 _keyHash
     ) VRFConsumerBase(_vrfCoordinator, _linkToken) {
-        auctionToken = _auctionToken;
+        auctionable = _auctionable;
         weth = IWETH(_weth);
         settings = _initialSettings;
         baseFeeObservations = _initBaseFeeObservations;
@@ -94,8 +94,8 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
     /**
      * @notice Bid on an auction, an address can bid many times on the same auction all bids
      * will be saved seperately. To increase a specific bid, use increaseAmountOfBid.
-     * @dev Bid amount is saved as gwei to keep bid gas as low as possible.
-     * Bidding only touches 1 storage slot. Therefore cannot bid lower than gwei precision.
+     * @dev Bidding only touches 1 storage slot. Bid amount is saved as gwei to keep bid gas as low as possible.
+     * Therefore cannot bid lower than gwei precision.
      * @param _auctionId Auction id
      * @return Array index of the bid, can be used to increase bid directly.
      */
@@ -135,9 +135,9 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
      * @dev Bid amount is saved as gwei to keep bid gas as low as possible.
      * Bidding only touches 1 storage slot. Therefore cannot bid lower than gwei precision.
      * @param _auctionId Auction id
-     * @param _bidId Index of the bid to increase
+     * @param _bidIndex Index of the bid to increase
      */
-    function increaseAmountOfBid(uint256 _auctionId, uint256 _bidId) external payable override {
+    function increaseAmountOfBid(uint256 _auctionId, uint256 _bidIndex) external payable override {
         if (msg.value % (1 gwei) != 0) {
             revert BidWithPrecisionLowerThanGwei();
         }
@@ -150,19 +150,16 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         if (getAuctionDefiniteEndTime(_auctionId) <= block.timestamp) {
             revert CannotBidAfterAuctionEndTime();
         }
-        if (msg.value < uint256(currentAuction.minBidAmount * (1 gwei))) {
-            revert MinimumBidAmountNotMet();
-        }
-        if (currentAuction.bids[_bidId].bidder != msg.sender) {
+        if (currentAuction.bids[_bidIndex].bidder != msg.sender) {
             revert CannotIncreaseBidForNonOwnedBid();
         }
 
         // @dev Here we convert the bid amount into gwei
-        currentAuction.bids[_bidId].bidAmount += uint64(msg.value / (1 gwei));
+        currentAuction.bids[_bidIndex].bidAmount += uint64(msg.value / (1 gwei));
         // @dev Every time a bidder increase bid, timestamp is reset to current time.
-        currentAuction.bids[_bidId].timePassedFromStart = uint32(uint64(block.timestamp) - uint64(currentAuction.startTime));
+        currentAuction.bids[_bidIndex].timePassedFromStart = uint32(uint64(block.timestamp) - uint64(currentAuction.startTime));
 
-        emit AuctionBidIncrease(msg.sender, _auctionId, _bidId, msg.value);
+        emit AuctionBidIncrease(msg.sender, _auctionId, _bidIndex, msg.value);
     }
 
     /**
@@ -487,7 +484,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
     function withdrawLostBid(
         uint256 _auctionId,
-        uint256 _bidId,
+        uint256 _bidIndex,
         bytes32 _hash,
         uint32[] calldata _winnerBidIds
     ) external override nonReentrant {
@@ -509,25 +506,25 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         }
 
         for (uint256 i = 0; i < _winnerBidIds.length; i++) {
-            if (_bidId == _winnerBidIds[i]) {
+            if (_bidIndex == _winnerBidIds[i]) {
                 revert CannotWithdrawLostBidIfIncludedInWinnersProposal();
             }
         }
 
-        if (currentAuction.bids[_bidId].isProcessed) {
+        if (currentAuction.bids[_bidIndex].isProcessed) {
             revert CannotWithdrawAlreadyWithdrawnBid();
         }
 
-        if (currentAuction.bids[_bidId].bidder != msg.sender) {
+        if (currentAuction.bids[_bidIndex].bidder != msg.sender) {
             revert CannotWithdrawBidIfNotSender();
         }
 
-        currentAuction.bids[_bidId].isProcessed = true;
+        currentAuction.bids[_bidIndex].isProcessed = true;
 
-        uint256 amount = uint256(currentAuction.bids[_bidId].bidAmount) * (1 gwei);
+        uint256 amount = uint256(currentAuction.bids[_bidIndex].bidAmount) * (1 gwei);
         _safeTransferETHWithFallback(msg.sender, amount);
 
-        emit LostBidWithdrawn(_auctionId, _bidId, msg.sender);
+        emit LostBidWithdrawn(msg.sender, _auctionId, _bidIndex);
     }
 
     /**
@@ -576,7 +573,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
         currentAuction.bids[bidIndex].isProcessed = true;
 
-        auctionToken.settle(
+        auctionable.settle(
             currentAuction.bids[bidIndex].bidder,
             uint256(keccak256(abi.encodePacked(currentAuction.vrfResult, bidIndex, "EnTrOpy")))
         );
@@ -829,7 +826,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
     }
 
     function _getCurrentMinimumBidAmount() internal view returns (uint64 minBid) {
-        minBid = _getTargetBaseFee() * uint64(auctionToken.getGasCost());
+        minBid = _getTargetBaseFee() * uint64(auctionable.getGasCost());
     }
 
     /**

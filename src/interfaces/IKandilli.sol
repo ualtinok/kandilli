@@ -122,23 +122,23 @@ interface IKandilli {
 
     event AuctionStarted(uint256 auctionId, uint256 startTime);
 
-    event AuctionBid(address indexed sender, uint256 auctionId, uint256 bidId, uint256 value);
+    event AuctionBid(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId, uint256 value);
 
-    event AuctionBidIncrease(address indexed sender, uint256 auctionId, uint256 bidId, uint256 value);
+    event AuctionBidIncrease(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId, uint256 value);
 
-    event AuctionWinnersProposed(address indexed sender, uint256 auctionId, bytes32 hash);
+    event AuctionWinnersProposed(address indexed sender, uint256 indexed auctionId, bytes32 hash);
 
-    event CandleSnuffed(address indexed sender, uint256 auctionId, bytes32 requestId);
+    event CandleSnuffed(address indexed sender, uint256 indexed auctionId, bytes32 requestId);
 
-    event WinningBidClaimed(address indexed sender, uint256 auctionId, uint256 bidId, address claimedto);
+    event WinningBidClaimed(address indexed sender, uint256 indexed auctionId, uint256 bidId, address claimedto);
 
-    event LostBidWithdrawn(uint256 auctionId, uint256 bidId, address sender);
+    event LostBidWithdrawn(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId);
 
-    event WinnersProposalBountyClaimed(address indexed sender, uint256 auctionId, uint256 amount);
+    event WinnersProposalBountyClaimed(address indexed sender, uint256 indexed auctionId, uint256 amount);
 
-    event SnuffBountyClaimed(address indexed sender, uint256 auctionId, uint256 amount);
+    event SnuffBountyClaimed(address indexed sender, uint256 indexed auctionId, uint256 amount);
 
-    event ChallengeSucceded(address indexed sender, uint256 auctionId, uint256 reason);
+    event ChallengeSucceded(address indexed sender, uint256 indexed auctionId, uint256 reason);
 
     /// ---------------------------
     /// ------- ERRORS  -----------
