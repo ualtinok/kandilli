@@ -17,32 +17,31 @@ interface IKandilli {
     /**
      * @notice Here we're using very tight packing with high gas optimization, below struct fits into
      *      a single storage slot (32 bytes). To be able to fit all data in single slot:
-     *      - Instead of using uint256 timestamp, we use an int32 which value is seconds since auction start which
-     *      is also used as a mark to declare if the bid claimed or withdrawn (when its set to -1).
-     *      - Instead of using uint256 for bidAmount we use uint64 and limit bids to gwei precision.
+     *      - Instead of using uint256 timestamp, we use an uint40 timestamp
+     *      - Instead of using uint256 for bidAmount we use uint48 and limit bids to gwei precision.
      * @param bidder: address of the bidder
-     * @param timePassedFromStart: seconds passed from start time.
-     *      If set to -1, it's either claimed or withdrawn after auction ends. (isProcessed)
+     * @param timestamp: timestamp.
      * @param bidAmount: bid value in gwei
      */
     struct KandilBid {
         address payable bidder;
-        int32 timePassedFromStart;
-        uint64 bidAmount;
+        uint40 timestamp;
+        uint48 bidAmount;
+        bool isProcessed;
     }
 
     /**
      * @notice: KandilBid struct + index in the bids array so that we can easily sort bids
      *      and same value bids will be sorted by index. Only used at challenge time and in memory.
      * @param bidder: address of the bidder
-     * @param timePassedFromStart: seconds passed from start time.
-     *      If set to -1, it's either claimed or withdrawn after auction ends. (isProcessed)
+     * @param timestamp: uint40 timestamp.
      * @param bidAmount: bid value in gwei
      */
     struct KandilBidWithIndex {
         address payable bidder;
-        int32 timePassedFromStart;
-        uint64 bidAmount;
+        uint40 timestamp;
+        uint48 bidAmount;
+        bool isProcessed;
         uint32 index;
     }
 
@@ -52,19 +51,19 @@ interface IKandilli {
      */
     struct KandilWinnersProposal {
         bytes32 keccak256Hash;
-        uint64 bounty;
-        uint64 timestamp;
+        address payable sender;
+        uint48 bounty;
+        uint40 timestamp;
         uint64 totalBidAmount;
         uint32 winnerCount;
-        address payable sender;
         bool isBountyClaimed;
     }
 
     struct KandilSnuff {
         address payable sender;
-        uint64 bounty;
-        uint64 potentialBounty;
-        uint64 timestamp;
+        uint48 bounty;
+        uint48 potentialBounty;
+        uint40 timestamp;
         bool isBountyClaimed;
     }
 
@@ -85,7 +84,7 @@ interface IKandilli {
      *      enough Link to pay for the VRF function. (amount depends on chain, 2 Link for Ethereum mainnet)
      */
     struct KandilAuctionSettings {
-        uint64 winnersProposalDepositAmount;
+        uint48 winnersProposalDepositAmount;
         uint32 fraudChallengePeriod;
         uint32 retroSnuffGas;
         uint32 winnersProposalGas;
@@ -99,10 +98,10 @@ interface IKandilli {
     /**
      * @notice Current state of the auction
      * @param vrfResult: VRF result returned from Chainlink
-     * @param startTime: Auction start time as 64bit timestamp
-     * @param minBidAmount: The minimum bid amount. It should approximately follow auctionable settle gas price + %10-%15.
+     * @param startTime: Auction start time as 40bit timestamp
+     * @param minBidAmount: The minimum bid amount. It should approximately target auctionable settle gas price + %10-%15.
      * @param targetBaseFee: Basefee we set at the auction creation based on observed base fees during auctionable settle calls.
-     * @param vrfSetTime: When VRF result returns this set to current block.timestamp as 64bit timestamp.
+     * @param vrfSetTime: When VRF result returns this set to current block.timestamp as 40bit timestamp.
      * @param settings: KandilAuctionSettings struct
      * @param bids: Array of bids
      * @param auctionState: Current state of the auction
@@ -111,16 +110,16 @@ interface IKandilli {
      *      winnersProposal set to 0 and wait for new winners proposal.
      */
     struct Kandil {
-        uint256 vrfResult;
-        uint64 startTime;
-        uint64 minBidAmount;
-        uint64 targetBaseFee;
-        uint32 vrfSetTime;
+        uint40 startTime;
+        uint48 minBidAmount;
+        uint32 targetBaseFee;
+        uint40 vrfSetTime;
         KandilState auctionState;
         KandilAuctionSettings settings;
-        KandilBid[] bids;
         KandilWinnersProposal winnersProposal;
         KandilSnuff snuff;
+        KandilBid[] bids;
+        uint256 vrfResult;
     }
 
     /// ---------------------------

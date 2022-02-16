@@ -16,7 +16,7 @@ contract MockAuctionableToken is IAuctionable, ERC721, Ownable {
         _safeMint(to, counter++);
     }
 
-    function getGasCost() external view returns (uint256) {
-        return 200000;
+    function getGasCost() external view returns (uint32) {
+        return 1;
     }
 }

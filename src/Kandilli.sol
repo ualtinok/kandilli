@@ -16,30 +16,43 @@ import {console} from "./test/utils/Console.sol";
 /**
  * @title Kandilli: Optimistic Candle Auctions
  * @author Ismet Ufuk Altinok (ism.eth)
+ * @notice An onchain gas optimized candle auction facilitator contract that uses optimistic auction settling
+ *      via fraud proofs.
  */
 contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
     using Counters for Counters.Counter;
     using SafeERC20 for IERC20;
 
-    IWETH immutable weth;
+    // @notice wrapped eth
+    IWETH public immutable weth;
 
-    IAuctionable internal auctionable;
+    // @notice Contract that implements auctionable. Like an erc729 token.
+    IAuctionable public immutable auctionable;
 
-    bytes32 internal keyHash;
+    // @notice keyHash for Chainlink VRF
+    bytes32 public keyHash;
 
-    uint256 internal vrfFee;
+    // @notice fee for Chainlink VRF
+    uint256 public vrfFee;
 
-    Counters.Counter private auctionId;
+    // @notice auction id
+    Counters.Counter public auctionId;
 
+    // @notice map that holds all auctions with their respective auction id
     mapping(uint256 => Kandil) public kandilAuctions;
 
+    // @notice settings for the auction, this is used inside the auction struct also.
+    // Changes to the settings will only reflect when a new auction starts.
     KandilAuctionSettings public settings;
 
-    mapping(bytes32 => uint256) private vrfRequestIdToAuctionId;
+    // @notice Is auction house initialized
+    bool public initialized;
 
+    // @notice Chainlink VRF requests to auction id mapping.
+    mapping(bytes32 => uint256) internal vrfRequestIdToAuctionId;
+
+    // @notice Base fee observations recorded during claims.
     uint32[] internal baseFeeObservations;
-
-    bool initialized;
 
     /**
      * @param _auctionable Any token that implements IAuctionable
@@ -82,7 +95,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         auctionId.increment();
 
         Kandil storage kandil = kandilAuctions[auctionId.current()];
-        kandil.startTime = uint64(block.timestamp);
+        kandil.startTime = uint40(block.timestamp);
         kandil.minBidAmount = _getCurrentMinimumBidAmount();
         kandil.auctionState = KandilState.Running;
         kandil.targetBaseFee = _getTargetBaseFee();
@@ -93,9 +106,9 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
     /**
      * @notice Bid on an auction, an address can bid many times on the same auction all bids
-     * will be saved seperately. To increase a specific bid, use increaseAmountOfBid.
+     *      will be saved seperately. To increase a specific bid, use increaseAmountOfBid.
      * @dev Bidding only touches 1 storage slot. Bid amount is saved as gwei to keep bid gas as low as possible.
-     * Therefore cannot bid lower than gwei precision.
+     *      Therefore cannot bid lower than gwei precision.
      * @param _auctionId Auction id
      * @return Array index of the bid, can be used to increase bid directly.
      */
@@ -111,7 +124,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         if (getAuctionDefiniteEndTime(_auctionId) <= block.timestamp) {
             revert CannotBidAfterAuctionEndTime();
         }
-        if (msg.value < uint256(currentAuction.minBidAmount * (1 gwei))) {
+        if (msg.value < uint256(currentAuction.minBidAmount) * (1 gwei)) {
             revert MinimumBidAmountNotMet();
         }
 
@@ -119,8 +132,9 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         currentAuction.bids.push(
             KandilBid({
                 bidder: payable(msg.sender),
-                timePassedFromStart: int32(uint32(uint64(block.timestamp) - uint64(currentAuction.startTime))),
-                bidAmount: uint64(msg.value / (1 gwei))
+                timestamp: uint40(block.timestamp),
+                bidAmount: uint48(msg.value / (1 gwei)),
+                isProcessed: false
             })
         );
 
@@ -132,7 +146,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
     /**
      * @notice Increase an already existing bid with bid index.
      * @dev Bid amount is saved as gwei to keep bid gas as low as possible.
-     * Bidding only touches 1 storage slot. Therefore cannot bid lower than gwei precision.
+     *      Bidding only touches 1 storage slot. Therefore cannot bid lower than gwei precision.
      * @param _auctionId Auction id
      * @param _bidIndex Index of the bid to increase
      */
@@ -154,19 +168,17 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         }
 
         // @dev Here we convert the bid amount into gwei
-        currentAuction.bids[_bidIndex].bidAmount += uint64(msg.value / (1 gwei));
+        currentAuction.bids[_bidIndex].bidAmount += uint48(msg.value / (1 gwei));
         // @dev Every time a bidder increase bid, timestamp is reset to current time.
-        currentAuction.bids[_bidIndex].timePassedFromStart = int32(
-            uint32(uint64(block.timestamp) - uint64(currentAuction.startTime))
-        );
+        currentAuction.bids[_bidIndex].timestamp = uint40(block.timestamp); //int32(uint32(block.timestamp - uint256(currentAuction.startTime)));
 
         emit AuctionBidIncrease(msg.sender, _auctionId, _bidIndex, msg.value);
     }
 
     /**
      * @notice This function requests Chainlink VRF for a random number. Once the VRF is called back we know the
-     * auction's actual ending time. Anyone can call this function once an auction is passed the definiteEndtime
-     * to collect a bounty later on.  The bounty periodically increases and targets initally to gas cost to call
+     * auction's actual ending time. Anyone can call this function once an auction total duration is finished
+     * to collect a bounty later on.  The bounty periodically increases and targets initially to gas cost to call
      * this function * targetBaseFee. Bounty isn't paid immediately because we cannot know if there will be any bids
      * before the snuff time without iterating through the bids (which we obviously don't want).
      * It also attempts to starts the next auction.
@@ -211,27 +223,27 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
         currentAuction.snuff.potentialBounty = _getAuctionRetroSnuffBounty(currentAuction, _auctionId);
         currentAuction.snuff.sender = payable(msg.sender);
-        currentAuction.snuff.timestamp = uint64(block.timestamp);
+        currentAuction.snuff.timestamp = uint40(block.timestamp);
 
         emit CandleSnuffed(msg.sender, _auctionId, requestId);
     }
 
     /**
-     * @notice Anyone can propose winners after the VRF is set. Proposer needs to follow bidder sorting algorithm
-     * to send winners with an array of bid index. Proposer needs to deposit an amount so that if proposer
-     * propose a fraud winners list, anyone can challenge the proposal and get proposer's deposit as bounty.
-     * If proposer is not challenged within the fraud challenge period, proposer will get
-     * his deposit + a proposer bounty as reward.
+     * @notice Anyone can propose winners after the VRF is set. Proposer needs to follow bid sorting algorithm
+     *      to send winners with an array of bid index. Proposer needs to deposit an amount so that if proposer
+     *      propose a fraud winners list, anyone can challenge the proposal and get proposer's deposit as bounty.
+     *      If proposer is not challenged within the fraud challenge period, proposer will get
+     *      his deposit + a proposer bounty as reward.
      * @dev We only save proposed bid id array's hash. We only need this as we can check proposed ids authenticity
-     * when we see again in calldata by checking hash against the recorded hash.
+     *      when we see again in calldata by checking hash against the recorded hash.
      * @param _auctionId Auction id
-     * @param _winnerBidIds Sorted array of winner bid indexes. Array should be equal or lower than maxWinnersPerAuction.
+     * @param _winnerBidIndexes Sorted array of winner bid indexes. Array should be equal or lower than maxWinnersPerAuction.
      * @param _hash keccak256 hash of the winnerBidIds + vrfResult.
      * @param _totalBidAmount Sum of all bid amounts in winner bids.
      */
     function proposeWinners(
         uint256 _auctionId,
-        uint32[] calldata _winnerBidIds,
+        uint32[] calldata _winnerBidIndexes,
         bytes32 _hash,
         uint64 _totalBidAmount
     ) external payable override {
@@ -240,21 +252,24 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert CannotProposeWinnersBeforeVRFSetOrWhenWinnersAlreadyPosted();
         }
 
-        if (keccak256(abi.encodePacked(_winnerBidIds, currentAuction.vrfResult)) != _hash) {
+        if (keccak256(abi.encodePacked(_winnerBidIndexes, currentAuction.vrfResult)) != _hash) {
             revert IncorrectHashForWinnerBids();
         }
 
-        //TODO: Deposit should be based on number of winners as challenge cost will be based on number of winners.
-        //TODO: Should probably have a base deposit + maxWinnersPerAuction * 21000
-        if (msg.value != (currentAuction.settings.winnersProposalDepositAmount * (1 gwei))) {
+        /* TODO: Optimization: Can skip the fraud challenge period if there's very low amount of bids.
+            Each bid to check will cost 1 slot to read (2100 gas). So if there's only 10 bids, total cost
+            Deposit should be based on number of winners as challenge cost will be based on number of winners.
+            Should probably have a base deposit + maxWinnersPerAuction * 21000
+        */
+        if (msg.value != uint256(currentAuction.settings.winnersProposalDepositAmount) * (1 gwei)) {
             revert DepositAmountForWinnersProposalNotMet();
         }
-        uint64 proposalBounty = _getAuctionWinnersProposalBounty(currentAuction, _auctionId);
+        uint48 proposalBounty = _getAuctionWinnersProposalBounty(currentAuction, _auctionId);
         // Here we check how much extra we have to give for bounty. If all the bids are minBidAmount, it means
         // we don't have any bounty to give.
-        uint64 totalMinBids = uint64(_winnerBidIds.length) * currentAuction.minBidAmount;
+        uint64 totalMinBids = uint64(_winnerBidIndexes.length) * currentAuction.minBidAmount;
         if (_totalBidAmount > totalMinBids) {
-            uint64 extraFunds = _totalBidAmount - totalMinBids;
+            uint48 extraFunds = uint48(_totalBidAmount - totalMinBids);
             proposalBounty = proposalBounty < extraFunds ? proposalBounty : extraFunds;
         } else {
             // No bounty for proposing winners as we haven't got extra from bids. We prioritize auctionable settling.
@@ -263,10 +278,10 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
         // Also re-calculate snuff bounty. On snuff time we didn't have data to calculate snuff bounty accurately
         // as we didn't have total bid amount.
-        uint64 potentialSnuffBounty = currentAuction.snuff.potentialBounty;
+        uint48 potentialSnuffBounty = currentAuction.snuff.potentialBounty;
         // Here we check how much extra we have to give for bounty. We also need to substract winners proposal bounty.
         if (_totalBidAmount > totalMinBids + proposalBounty) {
-            uint64 extraFunds = _totalBidAmount - totalMinBids - proposalBounty;
+            uint48 extraFunds = uint48(_totalBidAmount - totalMinBids - proposalBounty);
             currentAuction.snuff.bounty = potentialSnuffBounty < extraFunds ? potentialSnuffBounty : extraFunds;
         } else {
             currentAuction.snuff.bounty = 0;
@@ -275,9 +290,9 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             bounty: proposalBounty,
             totalBidAmount: _totalBidAmount,
             keccak256Hash: _hash,
-            winnerCount: uint32(_winnerBidIds.length),
+            winnerCount: uint32(_winnerBidIndexes.length),
             sender: payable(msg.sender),
-            timestamp: uint64(block.timestamp),
+            timestamp: uint40(block.timestamp),
             isBountyClaimed: false
         });
         currentAuction.auctionState = KandilState.WinnersProposed;
@@ -309,7 +324,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert CannotChallengeWinnersProposalBeforePosted();
         }
 
-        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod < uint64(block.timestamp)) {
+        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod < uint40(block.timestamp)) {
             revert CannotChallengeWinnersProposalAfterChallengePeriodIsOver();
         }
 
@@ -345,11 +360,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         // Check if bidIdToInclude is in the list of bids that is before snuff time.
         uint32 inclIndex = _bidIndexToInclude == 0xFFFFFFFF ? 0 : _bidIndexToInclude;
         KandilBid storage bidToInclude = currentAuction.bids[inclIndex];
-        if (
-            _bidIndexToInclude != 0xFFFFFFFF &&
-            uint256(currentAuction.startTime) + uint256(uint32(bidToInclude.timePassedFromStart)) >
-            getAuctionCandleSnuffedTime(_auctionId)
-        ) {
+        if (_bidIndexToInclude != 0xFFFFFFFF && uint256(bidToInclude.timestamp) > getAuctionCandleSnuffedTime(_auctionId)) {
             revert ChallengeFailedBidToIncludeIsNotBeforeSnuffTime();
         }
 
@@ -367,15 +378,18 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
             KandilBid storage bid = currentAuction.bids[_winnerBidIndexes[i]];
             // Check if any bid in the proposal is sent after the snuff time.
-            if (
-                uint256(currentAuction.startTime) + uint256(uint32(bid.timePassedFromStart)) >
-                getAuctionCandleSnuffedTime(_auctionId)
-            ) {
+            if (uint256(bid.timestamp) >= getAuctionCandleSnuffedTime(_auctionId)) {
                 return _challengeSucceeded(currentAuction, _auctionId, 4);
             }
 
             totalBidAmount += bid.bidAmount;
-            nBids[i] = KandilBidWithIndex(bid.bidder, bid.timePassedFromStart, bid.bidAmount, _winnerBidIndexes[i]);
+            nBids[i] = KandilBidWithIndex({
+                bidder: bid.bidder,
+                timestamp: bid.timestamp,
+                bidAmount: bid.bidAmount,
+                isProcessed: bid.isProcessed,
+                index: _winnerBidIndexes[i]
+            });
         }
 
         if (totalBidAmount != currentAuction.winnersProposal.totalBidAmount) {
@@ -383,12 +397,13 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         }
         if (_bidIndexToInclude != 0xFFFFFFFF) {
             // Add bid to include to the list of bids and sort again. If any items order changes, the challenge will succeed.
-            nBids[_winnerBidIndexes.length] = KandilBidWithIndex(
-                bidToInclude.bidder,
-                bidToInclude.timePassedFromStart,
-                bidToInclude.bidAmount,
-                _bidIndexToInclude
-            );
+            nBids[_winnerBidIndexes.length] = KandilBidWithIndex({
+                bidder: bidToInclude.bidder,
+                timestamp: bidToInclude.timestamp,
+                bidAmount: bidToInclude.bidAmount,
+                isProcessed: bidToInclude.isProcessed,
+                index: _bidIndexToInclude
+            });
         }
         // Depending on contract size, sorting functions can be either in the contract or lib.
         // Having in library have extra gas cost because of copy.
@@ -415,7 +430,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         currentAuction.winnersProposal.sender = payable(address(0));
         currentAuction.winnersProposal.timestamp = 0;
         currentAuction.auctionState = KandilState.VRFSet;
-        _safeTransferETHWithFallback(msg.sender, (currentAuction.settings.winnersProposalDepositAmount * (1 gwei)));
+        _safeTransferETHWithFallback(msg.sender, uint256(currentAuction.settings.winnersProposalDepositAmount) * (1 gwei));
     }
 
     function claimWinnersProposalBounty(uint256 _auctionId) external override nonReentrant {
@@ -429,7 +444,10 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert CannotClaimWinnersProposalBountyIfNotProposer();
         }
 
-        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint64(block.timestamp)) {
+        if (
+            currentAuction.winnersProposal.timestamp + uint40(currentAuction.settings.fraudChallengePeriod) >=
+            uint40(block.timestamp)
+        ) {
             revert CannotClaimWinnersProposalBountyBeforeChallengePeriodIsOver();
         }
 
@@ -441,7 +459,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert WinnersProposalBountyIsZero();
         }
 
-        uint256 bounty = (currentAuction.winnersProposal.bounty + currentAuction.settings.winnersProposalDepositAmount) *
+        uint256 bounty = uint256(currentAuction.winnersProposal.bounty + currentAuction.settings.winnersProposalDepositAmount) *
             (1 gwei);
 
         currentAuction.winnersProposal.isBountyClaimed = true;
@@ -462,7 +480,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert CannotClaimSnuffBountyBeforeIfNotSnuffer();
         }
 
-        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint64(block.timestamp)) {
+        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint40(block.timestamp)) {
             revert CannotClaimSnuffBountyBeforeChallengePeriodIsOver();
         }
 
@@ -474,7 +492,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert SnuffBountyIsZero();
         }
 
-        _safeTransferETHWithFallback(currentAuction.snuff.sender, (currentAuction.snuff.bounty * (1 gwei)));
+        _safeTransferETHWithFallback(currentAuction.snuff.sender, uint256(currentAuction.snuff.bounty) * (1 gwei));
 
         emit SnuffBountyClaimed(currentAuction.snuff.sender, _auctionId, currentAuction.snuff.bounty);
     }
@@ -490,7 +508,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert CannotWithdrawLostBidBeforeWinnersProposed();
         }
 
-        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint64(block.timestamp)) {
+        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint40(block.timestamp)) {
             revert CannotWithdrawLostBidBeforeChallengePeriodEnds();
         }
 
@@ -508,7 +526,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             }
         }
 
-        if (currentAuction.bids[_bidIndex].timePassedFromStart == -1) {
+        if (currentAuction.bids[_bidIndex].isProcessed) {
             revert CannotWithdrawAlreadyWithdrawnBid();
         }
 
@@ -516,10 +534,10 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert CannotWithdrawBidIfNotSender();
         }
 
-        currentAuction.bids[_bidIndex].timePassedFromStart = -1;
+        currentAuction.bids[_bidIndex].isProcessed = true;
 
         uint256 amount = uint256(currentAuction.bids[_bidIndex].bidAmount) * (1 gwei);
-        _safeTransferETHWithFallback(msg.sender, amount);
+        _safeTransferETHWithFallback(currentAuction.bids[_bidIndex].bidder, amount);
 
         emit LostBidWithdrawn(msg.sender, _auctionId, _bidIndex);
     }
@@ -552,7 +570,10 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert CannotClaimAuctionItemBeforeWinnersProposed();
         }
 
-        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint64(block.timestamp)) {
+        if (
+            currentAuction.winnersProposal.timestamp + uint40(currentAuction.settings.fraudChallengePeriod) >=
+            uint40(block.timestamp)
+        ) {
             revert CannotClaimAuctionItemBeforeChallengePeriodEnds();
         }
 
@@ -564,11 +585,11 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert WinnerProposalHashDoesntMatchPostedHash();
         }
 
-        if (currentAuction.bids[bidIndex].timePassedFromStart == -1) {
+        if (currentAuction.bids[bidIndex].isProcessed) {
             revert BidAlreadyClaimed();
         }
 
-        currentAuction.bids[bidIndex].timePassedFromStart = -1;
+        currentAuction.bids[bidIndex].isProcessed = true;
 
         auctionable.settle(
             currentAuction.bids[bidIndex].bidder,
@@ -576,7 +597,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         );
 
         // Calculate bounty based on minBidAmount.
-        _safeTransferETHWithFallback(msg.sender, uint256(currentAuction.minBidAmount * (1 gwei)));
+        _safeTransferETHWithFallback(msg.sender, uint256(currentAuction.minBidAmount) * (1 gwei));
 
         recordBaseFeeObservation();
 
@@ -589,16 +610,19 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert CannotMoveFundsBeforeWinnersProposed();
         }
 
-        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint64(block.timestamp)) {
+        if (
+            currentAuction.winnersProposal.timestamp + uint40(currentAuction.settings.fraudChallengePeriod) >=
+            uint40(block.timestamp)
+        ) {
             revert CannotMoveFundsBeforeChallengePeriodEnds();
         }
 
         // Calculate all bounties.
-        uint256 paidBounties = (currentAuction.winnersProposal.winnerCount * (currentAuction.minBidAmount * (1 gwei))) +
-            (currentAuction.snuff.bounty * (1 gwei)) +
-            (currentAuction.winnersProposal.bounty * (1 gwei));
+        uint256 paidBounties = (currentAuction.winnersProposal.winnerCount * (uint256(currentAuction.minBidAmount) * (1 gwei))) +
+            (uint256(currentAuction.snuff.bounty) * (1 gwei)) +
+            (uint256(currentAuction.winnersProposal.bounty) * (1 gwei));
 
-        uint256 totalAmount = uint256(currentAuction.winnersProposal.totalBidAmount * (1 gwei)) - paidBounties;
+        uint256 totalAmount = (uint256(currentAuction.winnersProposal.totalBidAmount) * (1 gwei)) - paidBounties;
         _safeTransferETHWithFallback(owner(), totalAmount);
     }
 
@@ -622,7 +646,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         }
 
         currentAuction.vrfResult = _randomness;
-        currentAuction.vrfSetTime = uint32(uint64(block.timestamp) - uint64(currentAuction.startTime));
+        currentAuction.vrfSetTime = uint40(block.timestamp);
         currentAuction.auctionState = KandilState.VRFSet;
 
         recordBaseFeeObservation();
@@ -638,7 +662,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
     function getAuctionMinimumBidAmount(uint256 _auctionId) external view returns (uint256) {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
-        return uint256(currentAuction.minBidAmount * (1 gwei));
+        return uint256(currentAuction.minBidAmount) * (1 gwei);
     }
 
     /**
@@ -669,7 +693,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
     function getClaimWinningBidBounty(uint256 _auctionId) public view returns (uint256) {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
-        return uint256(currentAuction.minBidAmount * (1 gwei));
+        return uint256(currentAuction.minBidAmount) * (1 gwei);
     }
 
     /**
@@ -700,7 +724,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
     }
 
     function getAuctionVRFSetTime(uint256 _auctionId) public view returns (uint256) {
-        return uint256(kandilAuctions[_auctionId].startTime + kandilAuctions[_auctionId].vrfSetTime);
+        return uint256(kandilAuctions[_auctionId].vrfSetTime);
     }
 
     function getAuctionSnuffPercentage(uint256 _auctionId) external view returns (uint256) {
@@ -726,7 +750,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
      */
     function getAuctionRetroSnuffBounty(uint256 _auctionId) public view returns (uint256) {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
-        return currentAuction.snuff.bounty * (1 gwei);
+        return uint256(currentAuction.snuff.bounty) * (1 gwei);
     }
 
     /**
@@ -734,7 +758,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
      */
     function getAuctionWinnersProposalBounty(uint256 _auctionId) public view returns (uint256) {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
-        return currentAuction.winnersProposal.bounty * (1 gwei);
+        return uint256(currentAuction.winnersProposal.bounty) * (1 gwei);
     }
 
     function getAuctionMaxWinnerCount(uint256 _auctionId) external view returns (uint256 r) {
@@ -746,7 +770,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
     }
 
     function getAuctionRequiredWinnersProposalDeposit(uint256 _auctionId) external view returns (uint256 r) {
-        r = uint256(kandilAuctions[_auctionId].settings.winnersProposalDepositAmount * (1 gwei));
+        r = uint256(kandilAuctions[_auctionId].settings.winnersProposalDepositAmount) * (1 gwei);
     }
 
     /**
@@ -758,20 +782,20 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
      * Bounty can only go as high as 10x the gas cost of calling the snuff function.
      */
     function _calculateBounty(
-        uint64 bountyBase,
-        uint64 timeMultiplier,
+        uint48 bountyBase,
+        uint256 timeMultiplier,
         uint8 maxBountyMultiplier
-    ) internal view returns (uint64) {
+    ) internal view returns (uint48) {
         return
-            bountyBase + ((bountyBase / 10) * timeMultiplier) > bountyBase * maxBountyMultiplier
+            bountyBase + ((bountyBase / 10) * uint48(timeMultiplier)) > bountyBase * maxBountyMultiplier
                 ? bountyBase * maxBountyMultiplier
-                : bountyBase + ((bountyBase / 10) * timeMultiplier);
+                : bountyBase + ((bountyBase / 10) * uint48(timeMultiplier));
     }
 
-    function _getAuctionRetroSnuffBounty(Kandil storage currentAuction, uint256 _auctionId) internal view returns (uint64) {
-        uint64 timePassed = uint64(block.timestamp - getAuctionDefiniteEndTime(_auctionId));
-        uint64 timeMultiplier = timePassed / 12;
-        uint64 bountyBase = (currentAuction.settings.retroSnuffGas * currentAuction.targetBaseFee);
+    function _getAuctionRetroSnuffBounty(Kandil storage currentAuction, uint256 _auctionId) internal view returns (uint48) {
+        uint256 timePassed = block.timestamp - getAuctionDefiniteEndTime(_auctionId);
+        uint256 timeMultiplier = timePassed / 12;
+        uint48 bountyBase = uint48(currentAuction.settings.retroSnuffGas * currentAuction.targetBaseFee);
 
         // WRONG we cannot know if we have bids before the snuff time. All bids might be after the snuff.
         // As we won't go through the bids array to see how much funds we have for bounties, we simply use the minimum bid
@@ -786,10 +810,10 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         return _calculateBounty(bountyBase, timeMultiplier, currentAuction.settings.maxBountyMultiplier);
     }
 
-    function _getAuctionWinnersProposalBounty(Kandil storage currentAuction, uint256 _auctionId) internal view returns (uint64) {
-        uint64 timePassed = uint64(block.timestamp - getAuctionVRFSetTime(_auctionId));
-        uint64 timeMultiplier = timePassed / 12;
-        uint64 bountyBase = (currentAuction.settings.winnersProposalGas * currentAuction.targetBaseFee);
+    function _getAuctionWinnersProposalBounty(Kandil storage currentAuction, uint256 _auctionId) internal view returns (uint48) {
+        uint256 timePassed = block.timestamp - getAuctionVRFSetTime(_auctionId);
+        uint256 timeMultiplier = timePassed / 12;
+        uint48 bountyBase = (currentAuction.settings.winnersProposalGas * currentAuction.targetBaseFee);
 
         return _calculateBounty(bountyBase, timeMultiplier, currentAuction.settings.maxBountyMultiplier);
     }
@@ -822,8 +846,8 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         if (i < right) _sortBaseFeeObservations(arr, i, right);
     }
 
-    function _getCurrentMinimumBidAmount() internal view returns (uint64 minBid) {
-        minBid = _getTargetBaseFee() * uint64(auctionable.getGasCost());
+    function _getCurrentMinimumBidAmount() internal view returns (uint48 minBid) {
+        minBid = uint48(_getTargetBaseFee() * auctionable.getGasCost());
     }
 
     /**
