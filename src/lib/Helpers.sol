@@ -22,10 +22,47 @@ library Helpers {
         return false;
     }
 
+    function bytesToUInt16Arr(bytes memory _bytes) internal pure returns (uint16[] memory tempUint) {
+        assembly {
+            let length := div(mload(_bytes), 2) // get size of _bytes and divide by 2 to get uint16 arr size.
+            tempUint := mload(0x40)
+            mstore(add(tempUint, 0x00), length)
+            let i := 0
+            for {
+
+            } lt(i, length) {
+                i := add(i, 1)
+            } {
+                mstore(add(tempUint, add(mul(i, 0x20), 0x20)), mload(add(add(_bytes, 0x2), mul(i, 2))))
+            }
+            mstore(0x40, add(tempUint, add(mul(i, 0x20), 0x20)))
+        }
+    }
+
+    function uint16ArrToBytes(uint16[] memory _uints) internal pure returns (bytes memory tempBytes) {
+        uint256 length = _uints.length * 2;
+        assembly {
+            tempBytes := mload(0x40)
+            mstore(tempBytes, length)
+            let i := 0
+            for {
+
+            } lt(i, length) {
+                i := add(i, 1)
+            } {
+                mstore(add(tempBytes, add(mul(2, i), 0x20)), shl(240, mload(add(_uints, add(mul(i, 0x20), 0x20)))))
+            }
+            mstore(0x40, add(tempBytes, add(0x40, mul(0x20, div(length, 0x20)))))
+        }
+    }
+
     // Sort bids first by bidAmount and for same amount, by their index. This can probably be optimized.
     // however this will be only used when a winners proposal is challenged. So sanely never...
     // Also as sorting will happen on client side for sending winners proposal. (in JS)
-    function sortBids(IKandilli.KandilBidWithIndex[] memory nBids) public returns (IKandilli.KandilBidWithIndex[] memory) {
+    function sortBids(IKandilli.KandilBidWithIndex[] memory nBids)
+        public
+        returns (IKandilli.KandilBidWithIndex[] memory)
+    {
         _sortBidByAmount(nBids, 0, int256(nBids.length - 1));
         for (uint256 i; i < nBids.length - 1; i++) {
             if (nBids[i].bidAmount == nBids[i + 1].bidAmount) {

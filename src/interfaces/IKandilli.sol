@@ -42,7 +42,7 @@ interface IKandilli {
         uint40 timestamp;
         uint48 bidAmount;
         bool isProcessed;
-        uint32 index;
+        uint16 index;
     }
 
     /**
@@ -55,7 +55,7 @@ interface IKandilli {
         uint48 bounty;
         uint40 timestamp;
         uint64 totalBidAmount;
-        uint32 winnerCount;
+        uint16 winnerCount;
         bool isBountyClaimed;
     }
 
@@ -84,12 +84,12 @@ interface IKandilli {
      *      enough Link to pay for the VRF function. (amount depends on chain, 2 Link for Ethereum mainnet)
      */
     struct KandilAuctionSettings {
+        uint32 auctionTotalDuration;
         uint48 winnersProposalDepositAmount;
         uint32 fraudChallengePeriod;
         uint32 retroSnuffGas;
         uint32 winnersProposalGas;
-        uint32 auctionTotalDuration;
-        uint32 maxWinnersPerAuction;
+        uint16 maxWinnersPerAuction;
         uint8 maxBountyMultiplier;
         uint8 snuffPercentage;
         bool snuffRequiresSendingLink;
@@ -102,24 +102,28 @@ interface IKandilli {
      * @param minBidAmount: The minimum bid amount. It should approximately target auctionable settle gas price + %10-%15.
      * @param targetBaseFee: Basefee we set at the auction creation based on observed base fees during auctionable settle calls.
      * @param vrfSetTime: When VRF result returns this set to current block.timestamp as 40bit timestamp.
-     * @param settings: KandilAuctionSettings struct
-     * @param bids: Array of bids
      * @param auctionState: Current state of the auction
+     * @param claimedWinnerCount: Counter to keep track of number of winners claimed.
+     * @param bids: Array of bids
+     * @param settings: KandilAuctionSettings struct
      * @param winnersProposal: Winners proposal can be send by anyone it has a fraud proof challenge period,
      *      if challenged and proven fraud, deposit is transfered to the challenger,
      *      winnersProposal set to 0 and wait for new winners proposal.
      */
     struct Kandil {
+        uint256 vrfResult;
         uint40 startTime;
+        uint40 definiteEndTime;
         uint48 minBidAmount;
         uint32 targetBaseFee;
         uint40 vrfSetTime;
+        uint32 claimedWinnerCount;
+        bool isFundsTransferred;
         KandilState auctionState;
         KandilAuctionSettings settings;
         KandilWinnersProposal winnersProposal;
         KandilSnuff snuff;
         KandilBid[] bids;
-        uint256 vrfResult;
     }
 
     /// ---------------------------
@@ -234,9 +238,11 @@ interface IKandilli {
 
     error ChallengeFailedBidIdToIncludeIsNotInBidList();
 
-    error CannotMoveFundsBeforeWinnersProposed();
+    error CannotTransferFundsBeforeWinnersProposed();
 
-    error CannotMoveFundsBeforeChallengePeriodEnds();
+    error CannotTransferFundsBeforeChallengePeriodEnds();
+
+    error FundsAlreadyTransferred();
 
     error BidIdDoesntExist();
 
@@ -254,6 +260,8 @@ interface IKandilli {
 
     error SnuffBountyIsZero();
 
+    error CannotWithdrawUntilAllWinnersClaims();
+
     /// ---------------------------
     /// --- EXTERNAL METHODS  -----
     /// ---------------------------
@@ -266,16 +274,16 @@ interface IKandilli {
 
     function proposeWinners(
         uint256 _auctionId,
-        uint32[] calldata _winnerBidIds,
+        bytes memory _winnerBidIndexesBytes,
         bytes32 _hash,
         uint64 _totalBidAmount
     ) external payable;
 
     function challengeProposedWinners(
         uint256 _auctionId,
-        uint32[] calldata _winnerBidIds,
+        bytes memory _winnerBidIndexesBytes,
         bytes32 _hash,
-        uint32 _bidIdToInclude
+        uint16 _bidIndexToInclude
     ) external;
 
     function claimWinnersProposalBounty(uint256 _auctionId) external;
@@ -284,21 +292,23 @@ interface IKandilli {
 
     function withdrawLostBid(
         uint256 _auctionId,
-        uint256 _bidId,
+        uint256 _bidIndex,
         bytes32 hash,
-        uint32[] calldata _winnerBidIds
+        bytes memory _winnerBidIndexesBytes
     ) external;
+
+    function withdrawLostBidAfterAllWinnersClaimed(uint256 _auctionId, uint256 _bidIndex) external;
 
     function claimWinningBid(
         uint256 _auctionId,
         bytes32 _hash,
-        uint32[] calldata _winnerBidIds,
+        bytes memory _winnerBidIndexesBytes,
         uint256 _winnerBidIdIndex
     ) external;
 
     function retroSnuffCandle(uint256 _auctionId) external returns (bytes32);
 
-    function moveAuctionFundsToOwner(uint256 _auctionId) external;
+    function transferAuctionFundsToOwner(uint256 _auctionId) external;
 
     function getAuctionBids(
         uint256 _auctionId,
