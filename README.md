@@ -96,7 +96,6 @@ Winners will receive their NFTs automagically!
 ## What's with the name? Kandilli?
 Kandil is derived from candēla (latin for "candle"). Kandilli is a neighbourhood name in Istanbul which is famous for its observatory and earthquake research institute.
 
-*** **cringe alert** *** this auction house will measure the earthquake that our next project will havoc. *** **end cring alert** ***
 
 
 ## Development
