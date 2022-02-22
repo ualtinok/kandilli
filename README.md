@@ -1,6 +1,6 @@
 ### !!! Untested - DO NOT USE IN PRODUCTION !!!
 
-#[WIP]Kandilli - Optimistic Candle Auctions
+# [WIP]Kandilli - Optimistic Candle Auctions
 
 Kandilli is an optimistic candle auction house that is optimized for gas usage. 
 Candle auction is a type of auction where bidders doesn't know exact end time of 
