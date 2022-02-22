@@ -2,11 +2,13 @@
 
 # [WIP]Kandilli - Optimistic Candle Auctions
 
-Kandilli is an optimistic candle auction house that is optimized for gas usage. 
-Candle auction is a type of auction where bidders doesn't know exact end time of 
-the auction but they know time scope of the auction. (start and definite end time).
+Kandilli is a multi-unit candle auction house that uses fraud proofs for low gas usage. 
+
+**Candle auction** is a type of auction in which the exact end time of the auction is unknown. 
 https://en.wikipedia.org/wiki/Candle_auction
 
+A **multi-unit auction** is an auction in which several homogeneous items are sold
+https://en.wikipedia.org/wiki/Multiunit_auction
 
 ## Goals
 
@@ -15,7 +17,7 @@ https://en.wikipedia.org/wiki/Candle_auction
 * Fair and inclusive price discovery
 
 
-For achieving these goals we use a similar approach as optimistic rollups. Anyone can post results of the auction, but anyone can challenge the results during fraud proof window and if found guilty, proposer loses their deposit.
+For achieving these goals we use a similar approach as optimistic rollups. Anyone can post results of the auction, however if anyone finds that the results are incorrect, they are able to challenge the results during fraud proof window.
 
 This way all transactions with the auction house are all very gas efficient.
 - **Adding bid**: around ```54k``` gas
@@ -38,7 +40,7 @@ _So in this example the actual end time will be sometime between **Wednesday 00:
 - Bids cannot be withdrawn
 
 ### Step 2: Candle Snuff
-- Just after Thursday 00:00:00, anyone can call the snuff function. 
+- Just after definite end time (Thursday 00:00:00 in the example), anyone can call the snuff function. 
 - Snuff function will ask Chainlink VRF to send back a random number. 
 - Depending on setting, snuffer may need to have LINK tokens and approve token usage to the contract. 
 - Caller of the function will receive a bounty which increases over time up to a max after the auction end time reached. This bounty is not immediately paid because depending on snuff time, auction may not have enough bids to cover the snuff bounty.
@@ -58,7 +60,7 @@ _So in this example the actual end time will be sometime between **Wednesday 00:
 
 ### Step 6: Auction Ends
 - If the winners proposal is not challenged during fraud proof window, auction ends.
-- Loser bid owners, can withdraw their bids.
+- Loser bid owners can withdraw their bids.
 - Anyone can call the claim function for winners including winners themselves. See below for more details.
 
 ## About Minimum Bid Amount and "Mint for me"

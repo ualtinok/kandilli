@@ -707,12 +707,12 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             uint256(keccak256(abi.encodePacked(currentAuction.vrfResult, bidIndex, "EnTrOpy")))
         );
 
-        // Calculate bounty based on minBidAmount.
-        _safeTransferETHWithFallback(msg.sender, uint256(currentAuction.minBidAmount) * (1 gwei));
-
         recordBaseFeeObservation();
 
         emit WinningBidClaimed(msg.sender, _auctionId, bidIndex, bid.bidder);
+
+        // Lastly send minBidAmount to the caller
+        _safeTransferETHWithFallback(msg.sender, uint256(currentAuction.minBidAmount) * (1 gwei));
     }
 
     /**
