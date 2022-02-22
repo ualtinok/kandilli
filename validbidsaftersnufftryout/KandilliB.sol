@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.11;
+pragma solidity 0.8.12;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {VRFConsumerBase} from "@chainlink/contracts/src/v0.8/VRFConsumerBase.sol";
@@ -160,7 +160,9 @@ contract KandilliB is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         // @dev Here we convert the bid amount into gwei
         currentAuction.bids[_bidId].bidAmount += uint64(msg.value / (1 gwei));
         // @dev Every time a bidder increase bid, timestamp is reset to current time.
-        currentAuction.bids[_bidId].timePassedFromStart = uint32(uint64(block.timestamp) - uint64(currentAuction.startTime));
+        currentAuction.bids[_bidId].timePassedFromStart = uint32(
+            uint64(block.timestamp) - uint64(currentAuction.startTime)
+        );
 
         emit AuctionBidIncrease(msg.sender, _auctionId, _bidId, msg.value);
     }
@@ -295,7 +297,10 @@ contract KandilliB is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert CannotChallengeWinnersProposalBeforePosted();
         }
 
-        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod < uint64(block.timestamp)) {
+        if (
+            currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod <
+            uint64(block.timestamp)
+        ) {
             revert CannotChallengeWinnersProposalAfterChallengePeriodIsOver();
         }
 
@@ -349,7 +354,10 @@ contract KandilliB is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
             KandilBid storage bid = currentAuction.bids[_winnerBidIndexes[i]];
             // Check if any bid in the proposal is sent after the snuff time.
-            if (uint256(currentAuction.startTime) + uint256(bid.timePassedFromStart) < getAuctionCandleSnuffedTime(_auctionId)) {
+            if (
+                uint256(currentAuction.startTime) + uint256(bid.timePassedFromStart) <
+                getAuctionCandleSnuffedTime(_auctionId)
+            ) {
                 beforeSnuffBids[bsbC++] = KandilBidWithIndex(
                     bid.bidder,
                     bid.timePassedFromStart,
@@ -445,7 +453,10 @@ contract KandilliB is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert CannotClaimWinnersProposalRewardIfNotProposer();
         }
 
-        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod > uint64(block.timestamp)) {
+        if (
+            currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >
+            uint64(block.timestamp)
+        ) {
             revert CannotClaimWinnersProposalRewardBeforeChallengePeriodIsOver();
         }
 
@@ -468,7 +479,10 @@ contract KandilliB is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert CannotWithdrawLostBidBeforeWinnersPosted();
         }
 
-        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint64(block.timestamp)) {
+        if (
+            currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >=
+            uint64(block.timestamp)
+        ) {
             revert CannotWithdrawLostBidBeforeChallengePeriodEnds();
         }
 
@@ -529,7 +543,8 @@ contract KandilliB is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             }
 
             if (
-                currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint64(block.timestamp)
+                currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >=
+                uint64(block.timestamp)
             ) {
                 revert CannotClaimAuctionItemBeforeChallengePeriodEnds();
             }
@@ -565,7 +580,10 @@ contract KandilliB is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         console.log(uint256(currentAuction.minBidAmount * (1 gwei)));
 
         if (uint256(currentAuction.minBidAmount * (1 gwei)) - paidRewardPerWinner > 0) {
-            _safeTransferETHWithFallback(msg.sender, uint256(currentAuction.minBidAmount * (1 gwei)) - paidRewardPerWinner);
+            _safeTransferETHWithFallback(
+                msg.sender,
+                uint256(currentAuction.minBidAmount * (1 gwei)) - paidRewardPerWinner
+            );
         }
 
         recordBaseFeeObservation();
@@ -579,7 +597,10 @@ contract KandilliB is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
             revert CannotMoveFundsBeforeWinnersPosted();
         }
 
-        if (currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >= uint64(block.timestamp)) {
+        if (
+            currentAuction.winnersProposal.timestamp + currentAuction.settings.fraudChallengePeriod >=
+            uint64(block.timestamp)
+        ) {
             revert CannotMoveFundsBeforeChallengePeriodEnds();
         }
 
@@ -739,7 +760,11 @@ contract KandilliB is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
                 : bountyBase + ((bountyBase / 10) * timeMultiplier);
     }
 
-    function _getAuctionRetroSnuffBounty(Kandil storage currentAuction, uint256 _auctionId) internal view returns (uint256) {
+    function _getAuctionRetroSnuffBounty(Kandil storage currentAuction, uint256 _auctionId)
+        internal
+        view
+        returns (uint256)
+    {
         uint256 timePassed = block.timestamp - getAuctionDefiniteEndTime(_auctionId);
         uint256 timeMultiplier = timePassed / 12;
         uint256 bountyBase = (currentAuction.settings.retroSnuffGas * currentAuction.targetBaseFee * 1 gwei);
@@ -749,11 +774,19 @@ contract KandilliB is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         // This amount might not even cover the gas cost of calling snuff but we don't have other options. In such case,
         // auction house owner should call snuff.
         uint256 minimumAmountCollected = currentAuction.minBidAmount * (1 gwei) * currentAuction.bids.length;
-        uint256 calculatedBounty = _calculateBounty(bountyBase, timeMultiplier, currentAuction.settings.maxBountyMultiplier);
+        uint256 calculatedBounty = _calculateBounty(
+            bountyBase,
+            timeMultiplier,
+            currentAuction.settings.maxBountyMultiplier
+        );
         return calculatedBounty < minimumAmountCollected ? calculatedBounty : minimumAmountCollected;
     }
 
-    function _getAuctionWinnersProposalBounty(Kandil storage currentAuction, uint256 _auctionId) internal view returns (uint256) {
+    function _getAuctionWinnersProposalBounty(Kandil storage currentAuction, uint256 _auctionId)
+        internal
+        view
+        returns (uint256)
+    {
         uint256 timePassed = block.timestamp - getAuctionVRFSetTime(_auctionId);
         uint256 timeMultiplier = timePassed / 12;
         uint256 bountyBase = (currentAuction.settings.winnersProposalGas * currentAuction.targetBaseFee * 1 gwei);

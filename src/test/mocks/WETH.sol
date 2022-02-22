@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.11;
+pragma solidity ^0.8.0;
 
 /// @title WETH
 /// @notice FOR TEST PURPOSES ONLY. Source: https://github.com/gnosis/canonical-weth/blob/0dd1ea3e295eef916d0c6223ec63141137d22d67/contracts/WETH9.sol
@@ -57,13 +57,8 @@ contract WETH {
     ) public returns (bool) {
         require(balanceOf[src] >= wad, "insufficient balance");
 
-        if (
-            src != msg.sender && allowance[src][msg.sender] != type(uint128).max
-        ) {
-            require(
-                allowance[src][msg.sender] >= wad,
-                "insufficient allowance"
-            );
+        if (src != msg.sender && allowance[src][msg.sender] != type(uint128).max) {
+            require(allowance[src][msg.sender] >= wad, "insufficient allowance");
             allowance[src][msg.sender] -= wad;
         }
 

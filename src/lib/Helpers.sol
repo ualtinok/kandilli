@@ -1,4 +1,4 @@
-pragma solidity ^0.8.11;
+pragma solidity ^0.8.0;
 
 import {IKandilli} from "../interfaces/IKandilli.sol";
 import "../interfaces/IKandilli.sol";
@@ -23,6 +23,7 @@ library Helpers {
     }
 
     function bytesToUInt16Arr(bytes memory _bytes) internal pure returns (uint16[] memory tempUint) {
+        // solhint-disable-next-line no-inline-assembly
         assembly {
             let length := div(mload(_bytes), 2) // get size of _bytes and divide by 2 to get uint16 arr size.
             tempUint := mload(0x40)
@@ -41,6 +42,7 @@ library Helpers {
 
     function uint16ArrToBytes(uint16[] memory _uints) internal pure returns (bytes memory tempBytes) {
         uint256 length = _uints.length * 2;
+        // solhint-disable-next-line no-inline-assembly
         assembly {
             tempBytes := mload(0x40)
             mstore(tempBytes, length)

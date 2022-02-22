@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.11;
+pragma solidity ^0.8.0;
 
 import {ERC20Mock} from "@openzeppelin/contracts/mocks/ERC20Mock.sol";
 
@@ -28,15 +28,6 @@ contract LinkTokenMock is ERC20Mock {
         nonces[keyHash]++;
         return true;
     }
-
-    /*    function balanceOf(address _account)
-        external
-        pure
-        returns (uint256 balanceOf_)
-    {
-        _account;
-        balanceOf_ = 5e18;
-    }*/
 
     function getRequestId() external view returns (bytes32 requestId_) {
         bytes32 input = keccak256(abi.encode(keyHash, seed, requester, nonces[keyHash] - 1));

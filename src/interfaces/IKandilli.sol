@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.11;
+pragma solidity ^0.8.0;
 
 interface IKandilli {
     /**
@@ -266,7 +266,9 @@ interface IKandilli {
     /// --- EXTERNAL METHODS  -----
     /// ---------------------------
 
-    function init() external;
+    function init(KandilAuctionSettings memory _settings) external;
+
+    function reset(KandilAuctionSettings memory _settings, uint256 _vrfFee) external;
 
     function addBidToAuction(uint256 _auctionId) external payable returns (uint256);
 

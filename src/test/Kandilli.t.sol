@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.11;
+pragma solidity ^0.8.0;
 
 import {DSTest} from "ds-test/test.sol";
 import {Utilities} from "./utils/Utilities.sol";
@@ -77,6 +77,8 @@ contract KandilliTest is DSTest {
 
     uint256 maxTestBidCount = 200;
 
+    IKandilli.KandilAuctionSettings settings;
+
     function setUp() public {
         utils = new Utilities();
         if (randomViaFFI) {
@@ -90,7 +92,7 @@ contract KandilliTest is DSTest {
         linkToken = new LinkTokenMock("LinkToken", "LINK", users[0], 5e18);
         vrfCoordinatorMock = new VRFCoordinatorMock(address(linkToken));
         weth = new WETH();
-        IKandilli.KandilAuctionSettings memory settings = IKandilli.KandilAuctionSettings({
+        settings = IKandilli.KandilAuctionSettings({
             winnersProposalDepositAmount: winnersProposalDeposit,
             fraudChallengePeriod: fraudChallengePeriod,
             retroSnuffGas: retroSnuffGas,
@@ -108,7 +110,6 @@ contract KandilliTest is DSTest {
         vm.prank(utils.getNamedUser("deployer"));
         kandilli = new Kandilli(
             mockAuctionableToken,
-            settings,
             initialBidAmounts,
             address(weth),
             address(linkToken),
@@ -124,16 +125,16 @@ contract KandilliTest is DSTest {
 
     function testInit() public {
         vm.expectRevert("Ownable: caller is not the owner");
-        kandilli.init();
+        kandilli.init(settings);
         vm.startPrank(utils.getNamedUser("deployer"));
-        kandilli.init();
+        kandilli.init(settings);
         vm.expectRevert(abi.encodeWithSignature("AlreadyInitialized()"));
-        kandilli.init();
+        kandilli.init(settings);
     }
 
     function testBids(uint256 randomE) public {
         vm.prank(utils.getNamedUser("deployer"));
-        kandilli.init();
+        kandilli.init(settings);
         uint256 auctionId = 1;
         uint256 startTime = kandilli.getAuctionStartTime(auctionId);
         vm.prank(alice);
@@ -167,7 +168,7 @@ contract KandilliTest is DSTest {
 
     function testIncreaseBid(uint256 randomE) public {
         vm.prank(utils.getNamedUser("deployer"));
-        kandilli.init();
+        kandilli.init(settings);
         uint256 auctionId = 1;
         uint256 startTime = kandilli.getAuctionStartTime(auctionId);
         // Send dummy bids first to clutter.
@@ -202,8 +203,8 @@ contract KandilliTest is DSTest {
         uint16 timePassed = 0;
         bool isLinkRequired = false;*/
         vm.startPrank(utils.getNamedUser("deployer"));
-        kandilli.setAuctionRequiresLink(isLinkRequired);
-        kandilli.init();
+        settings.snuffRequiresSendingLink = isLinkRequired;
+        kandilli.init(settings);
         vm.stopPrank();
 
         uint256 auctionId = 1;
@@ -318,7 +319,7 @@ contract KandilliTest is DSTest {
     function testProposeWinners(uint256 randomE) public {
         //uint256 randomE = 1858916283958370368913553293944955234632628839575658048919750774306277050000;
         vm.prank(utils.getNamedUser("deployer"));
-        kandilli.init();
+        kandilli.init(settings);
 
         uint256 auctionId = 1;
         uint256 depositAmount = kandilli.getAuctionRequiredWinnersProposalDeposit(auctionId);
@@ -402,7 +403,7 @@ contract KandilliTest is DSTest {
 
     function testClaimToken(uint256 randomE) public {
         vm.prank(utils.getNamedUser("deployer"));
-        kandilli.init();
+        kandilli.init(settings);
 
         //uint256 randomE = 513364110310922539964742487704664574486530143139934386000;
         uint256 auctionId = 1;
@@ -485,7 +486,7 @@ contract KandilliTest is DSTest {
 
     function testWithdrawBid(uint256 randomE) public {
         vm.prank(utils.getNamedUser("deployer"));
-        kandilli.init();
+        kandilli.init(settings);
 
         uint256 auctionId = 1;
         uint256 startTime = kandilli.getAuctionStartTime(auctionId);
@@ -538,7 +539,7 @@ contract KandilliTest is DSTest {
 
     function testChallengeWinnersProposals(uint256 randomE) public {
         vm.prank(utils.getNamedUser("deployer"));
-        kandilli.init();
+        kandilli.init(settings);
 
         //uint256 randomE = 3;
 
@@ -747,7 +748,7 @@ contract KandilliTest is DSTest {
 
     function testChallengeWinnersProposalFailures(uint256 randomE) public {
         vm.prank(utils.getNamedUser("deployer"));
-        kandilli.init();
+        kandilli.init(settings);
         //uint256 randomE = 4499550098297379889107541569912050205441959294117414913041628694394132133202;
         uint256 auctionId = 1;
         uint256 startTime = kandilli.getAuctionStartTime(auctionId);
@@ -863,7 +864,7 @@ contract KandilliTest is DSTest {
 
     function testBidPaging() public {
         vm.prank(utils.getNamedUser("deployer"));
-        kandilli.init();
+        kandilli.init(settings);
 
         uint256 auctionId = 1;
 
@@ -891,7 +892,7 @@ contract KandilliTest is DSTest {
 
     function testTransferFunds(uint256 randomE) public {
         vm.prank(utils.getNamedUser("deployer"));
-        kandilli.init();
+        kandilli.init(settings);
 
         //uint256 randomE = 9665110016001107365961736065161865292364745277800064029878957631900366855401;
         uint256 auctionId = 1;
@@ -972,7 +973,7 @@ contract KandilliTest is DSTest {
 
     function testFullAuction() public {
         vm.prank(utils.getNamedUser("deployer"));
-        kandilli.init();
+        kandilli.init(settings);
 
         uint256 auctionId = 1;
         uint256 startTime = kandilli.getAuctionStartTime(auctionId);

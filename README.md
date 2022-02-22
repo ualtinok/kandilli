@@ -13,14 +13,14 @@ https://en.wikipedia.org/wiki/Candle_auction
 * Best possible UX for end users
 * Eliminate gas wars
 * Fair and inclusive price discovery
-
+* 
 
 For achieving these goals we use a similar approach as optimistic rollups. Anyone can post results of the auction, but anyone can challenge the results during fraud proof window and if found guilty, proposer loses their deposit.
 
 This way all transactions with the auction house are all very gas efficient.
-- **Adding bid**: less than ```50k``` gas
-- **Increasing bid**: less than ```26k``` gas
-- **Withdrawing lost bid**: around ```50k``` gas
+- **Adding bid**: around ```54k``` gas
+- **Increasing bid**: around```34k``` gas
+- **Withdrawing lost bid**: around ```50k``` or ```34k``` gas (depending on winners claim status)
 
 ## Auction Process
 Suppose we have a **3 day long** auction starting at **Monday 00:00:00** and ending at **Thursday 00:00:00**. Also candle snuff percentage is set to **30%**.
@@ -85,6 +85,9 @@ Winners will receive their NFTs automagically!
   - Even though normally it's an uint16 array, we send as bytes: packed as 2 bytes per item.
   - This saves a lot of gas on calldata because if we directly send as uint16 array, each item is sent as 32 bytes.
 * We use tight struct packing where possible.
+* We have 2 seperate function for lost bid withdrawal.
+  - One of them can be used before all winning bids are claimed, that one requires winning bids to be sent as calldata, and checks that sent bid index is not in winning list.
+  - Second one can only be used after all winning bids are claimed, this one doesn't require sending any calldata and further checks.
 
 ## Feature extensions:
 - [ ] Lifetime limit for auctioned item count.
@@ -95,9 +98,6 @@ Winners will receive their NFTs automagically!
 
 ## What's with the name? Kandilli?
 Kandil is derived from candēla (latin for "candle"). Kandilli is a neighbourhood name in Istanbul which is famous for its observatory and earthquake research institute.
-
-*** **cringe alert** *** this auction house will measure the earthquake that our next project will havoc. *** **end cring alert** ***
-
 
 ## Development
 

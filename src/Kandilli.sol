@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity 0.8.11;
+pragma solidity ^0.8.0;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {VRFConsumerBase} from "@chainlink/contracts/src/v0.8/VRFConsumerBase.sol";
@@ -15,7 +15,7 @@ import {console} from "./test/utils/Console.sol";
 
 /**
  * @title Kandilli: Optimistic Candle Auctions
- * @author Ismet Ufuk Altinok (ism.eth)
+ * @author ism.eth
  * @notice An onchain gas optimized candle auction facilitator contract that uses optimistic auction settling
  *      via fraud proofs.
  */
@@ -56,7 +56,6 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
     /**
      * @param _auctionable Any token that implements IAuctionable
-     * @param _initialSettings Initial KandilHouseSettings
      * @param _initBaseFeeObservations Initial base fee observations
      * @param _weth Wrapper Eth token address
      * @param _linkToken Chainlink token address in current chain
@@ -66,7 +65,6 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
      */
     constructor(
         IAuctionable _auctionable,
-        KandilAuctionSettings memory _initialSettings,
         uint16[96] memory _initBaseFeeObservations,
         address _weth,
         address _linkToken,
@@ -76,19 +74,24 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
     ) VRFConsumerBase(_vrfCoordinator, _linkToken) {
         auctionable = _auctionable;
         weth = IWETH(_weth);
-        settings = _initialSettings;
         baseFeeObservations = _initBaseFeeObservations;
 
         vrfFee = _vrfFee;
         keyHash = _keyHash;
     }
 
-    function init() external onlyOwner {
+    function init(KandilAuctionSettings memory _settings) external override onlyOwner {
         if (initialized) {
             revert AlreadyInitialized();
         }
+        settings = _settings;
         initialized = true;
         startNewAuction();
+    }
+
+    function reset(KandilAuctionSettings memory _settings, uint256 _vrfFee) external override onlyOwner {
+        settings = _settings;
+        vrfFee = _vrfFee;
     }
 
     function startNewAuction() internal {
@@ -226,7 +229,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
 
         startNewAuction();
 
-        currentAuction.snuff.potentialBounty = _getAuctionRetroSnuffBounty(currentAuction, _auctionId);
+        currentAuction.snuff.potentialBounty = _getAuctionRetroSnuffBounty(currentAuction);
         currentAuction.snuff.sender = payable(msg.sender);
         currentAuction.snuff.timestamp = uint40(block.timestamp);
 
@@ -748,13 +751,18 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
         _safeTransferETHWithFallback(owner(), totalAmount);
     }
 
+    /*
+     */
     /**
      * @notice Configure kandil house to whether to require depositing LINK while calling snuff.
      * If this is false, LINK needs to be deposited to the contract externally.
      */
+    /*
+
     function setAuctionRequiresLink(bool _requiresLink) external onlyOwner {
         settings.snuffRequiresSendingLink = _requiresLink;
     }
+*/
 
     /**
      *  @notice This function will be called with a random uint256 which will be used to find out candle snuff time.
@@ -899,7 +907,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
      */
     function getAuctionPotentialRetroSnuffBounty(uint256 _auctionId) public view returns (uint256) {
         Kandil storage currentAuction = kandilAuctions[_auctionId];
-        return _getAuctionRetroSnuffBounty(currentAuction, _auctionId) * (1 gwei);
+        return _getAuctionRetroSnuffBounty(currentAuction) * (1 gwei);
     }
 
     /**
@@ -945,11 +953,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
                 : bountyBase + ((bountyBase / 10) * uint48(timeMultiplier));
     }
 
-    function _getAuctionRetroSnuffBounty(Kandil storage currentAuction, uint256 _auctionId)
-        internal
-        view
-        returns (uint48)
-    {
+    function _getAuctionRetroSnuffBounty(Kandil storage currentAuction) internal view returns (uint48) {
         uint256 timePassed = block.timestamp - currentAuction.definiteEndTime;
         uint256 timeMultiplier = timePassed / 12;
         uint48 bountyBase = uint48(currentAuction.settings.retroSnuffGas * currentAuction.targetBaseFee);
@@ -1032,6 +1036,7 @@ contract Kandilli is IKandilli, Ownable, VRFConsumerBase, ReentrancyGuard {
     }
 
     function _bytesToUInt16Arr(bytes memory _bytes) internal pure returns (uint16[] memory tempUint) {
+        // solhint-disable-next-line no-inline-assembly
         assembly {
             let length := div(mload(_bytes), 2) // get size of _bytes and divide by 2 to get uint16 arr size.
             tempUint := mload(0x40)
