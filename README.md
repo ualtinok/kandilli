@@ -1,6 +1,6 @@
 ### !!! Untested - DO NOT USE IN PRODUCTION !!!
 
-#[WIP]Kandilli - Optimistic Candle Auctions
+# [WIP]Kandilli - Optimistic Candle Auctions
 
 Kandilli is an optimistic candle auction house that is optimized for gas usage. 
 Candle auction is a type of auction where bidders doesn't know exact end time of 
@@ -13,7 +13,7 @@ https://en.wikipedia.org/wiki/Candle_auction
 * Best possible UX for end users
 * Eliminate gas wars
 * Fair and inclusive price discovery
-* 
+
 
 For achieving these goals we use a similar approach as optimistic rollups. Anyone can post results of the auction, but anyone can challenge the results during fraud proof window and if found guilty, proposer loses their deposit.
 
@@ -98,6 +98,8 @@ Winners will receive their NFTs automagically!
 
 ## What's with the name? Kandilli?
 Kandil is derived from candēla (latin for "candle"). Kandilli is a neighbourhood name in Istanbul which is famous for its observatory and earthquake research institute.
+
+
 
 ## Development
 
