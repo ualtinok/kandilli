@@ -1,3 +1,5 @@
 @openzeppelin/contracts-upgradeable=lib/openzeppelin-contracts-upgradeable/contracts
 @openzeppelin/contracts=lib/openzeppelin-contracts/contracts
 @chainlink/contracts=lib/chainlink/contracts
+@rari-capital/solmate=lib/solmate
+hardhat/=src/test/utils/

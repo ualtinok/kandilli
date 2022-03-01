@@ -111,16 +111,16 @@ interface IKandilli {
      *      winnersProposal set to 0 and wait for new winners proposal.
      */
     struct Kandil {
-        uint256 vrfResult;
         uint40 startTime;
         uint40 definiteEndTime;
         uint48 minBidAmount;
         uint32 targetBaseFee;
-        uint40 vrfSetTime;
         uint32 claimedWinnerCount;
+        uint32 settings;
         bool isFundsTransferred;
         KandilState auctionState;
-        KandilAuctionSettings settings;
+        uint40 vrfSetTime;
+        uint256 vrfResult;
         KandilWinnersProposal winnersProposal;
         KandilSnuff snuff;
         KandilBid[] bids;
@@ -130,7 +130,11 @@ interface IKandilli {
     /// ------- EVENTS  -----------
     /// ---------------------------
 
-    event AuctionStarted(uint256 auctionId, uint256 startTime);
+    event AuctionStarted(uint256 indexed auctionId, uint256 minBidAmount, uint256 settingsId);
+
+    event SettingsUpdated(KandilAuctionSettings settings, uint256 settingsId);
+
+    event VRFFeeUpdated(uint256 vrfFee);
 
     event AuctionBid(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId, uint256 value);
 
@@ -268,7 +272,9 @@ interface IKandilli {
 
     function init(KandilAuctionSettings memory _settings) external;
 
-    function reset(KandilAuctionSettings memory _settings, uint256 _vrfFee) external;
+    function reset(KandilAuctionSettings memory _settings) external;
+
+    function setVRFFee(uint256 _vrfFee) external;
 
     function addBidToAuction(uint256 _auctionId) external payable returns (uint256);
 

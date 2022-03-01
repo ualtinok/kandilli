@@ -11,7 +11,7 @@ import {WETH} from "./mocks/WETH.sol";
 import {LinkTokenMock} from "./mocks/LinkTokenMock.sol";
 import {VRFCoordinatorMock} from "chainlink/contracts/src/v0.8/mocks/VRFCoordinatorMock.sol";
 import {IKandilli} from "../interfaces/IKandilli.sol";
-import {Helpers} from "../lib/Helpers.sol";
+import {Helpers} from "../libraries/Helpers.sol";
 import "../../lib/openzeppelin-contracts/contracts/mocks/SafeERC20Helper.sol";
 import {Strings} from "../../lib/openzeppelin-contracts/contracts/utils/Strings.sol";
 
@@ -30,7 +30,8 @@ struct ProposeWinnersResult {
 contract KandilliTest is DSTest {
     using Strings for uint256;
 
-    event AuctionStarted(uint256 auctionId, uint256 startTime);
+    event AuctionStarted(uint256 indexed auctionId, uint256 minBidAmount, uint256 settingsId);
+    event SettingsUpdated(IKandilli.KandilAuctionSettings settings, uint256 settingsId);
     event AuctionBid(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId, uint256 value);
     event AuctionBidIncrease(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId, uint256 value);
     event AuctionWinnersProposed(address indexed sender, uint256 indexed auctionId, bytes32 hash);
@@ -1102,8 +1103,8 @@ contract KandilliTest is DSTest {
         emit Approval(snuffer, address(kandilli), vrfFee);
         linkToken.approve(address(kandilli), vrfFee);
 
-        vm.expectEmit(true, false, false, true);
-        emit AuctionStarted(auctionId + 1, startTime + auctionTotalDuration + 1);
+        vm.expectEmit(true, false, false, false);
+        emit AuctionStarted(auctionId + 1, 0, 0);
         vm.expectEmit(true, false, false, false);
         emit CandleSnuffed(snuffer, 1, bytes32(0));
 
