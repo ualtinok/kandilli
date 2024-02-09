@@ -1,5 +1,7 @@
-out/
-cache/
-node_modules/
 .env
 .idea
+cache
+coverage
+node_modules
+out
+lcov.info

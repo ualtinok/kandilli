@@ -1,5 +1,0 @@
-KandilliTest:testBid() (gas: 228839)
-KandilliTest:testClaimToken() (gas: 4802955)
-KandilliTest:testIncreaseBid() (gas: 195207)
-KandilliTest:testPostWinners() (gas: 4631426)
-KandilliTest:testSnuffCandle(uint256) (runs: 256, μ: 373823, ~: 373824)

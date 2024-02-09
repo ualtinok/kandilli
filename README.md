@@ -110,7 +110,7 @@ First install foundry: https://onbjerg.github.io/foundry-book/getting-started/in
 ### Set up
 ```
 git clone https://github.com/ualtinok/kandilli
-git submodule update --init --recursive ## install dependencies
+bun install
 forge build
 ```
 
@@ -118,10 +118,4 @@ forge build
 
 ```
 forge test
-```
-
-### Lint
-```
-npm install 
-npm run lint 
 ```

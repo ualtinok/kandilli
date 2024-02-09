@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: Unlicense
 pragma solidity >=0.8.0;
 
-import {DSTest} from "ds-test/test.sol";
-import "forge-std/Vm.sol";
+import { PRBTest } from "@prb/test/src/PRBTest.sol";
+import {Vm} from "forge-std/src/Vm.sol";
 
 struct Data {
     string name;
 }
 
 //common utilities for forge tests
-contract Utilities is DSTest {
-    Vm internal immutable hevm = Vm(HEVM_ADDRESS);
+contract Utilities is PRBTest {
     bytes32 internal nextUser = keccak256(abi.encodePacked("user address"));
 
     function getRandomNumber() external returns (uint256) {
@@ -19,7 +18,7 @@ contract Utilities is DSTest {
         string[] memory inputs = new string[](2);
         inputs[0] = "node";
         inputs[1] = "scripts/rand.js";
-        bytes memory res = hevm.ffi(inputs);
+        bytes memory res = vm.ffi(inputs);
         Data memory data = abi.decode(res, (Data));
         return uint256(keccak256(abi.encode(data.name)));
     }
@@ -36,7 +35,7 @@ contract Utilities is DSTest {
         address payable[] memory users = new address payable[](userNum);
         for (uint256 i = 0; i < userNum; i++) {
             address payable user = this.getNextUserAddress();
-            hevm.deal(user, 100 ether);
+            vm.deal(user, 100 ether);
             users[i] = user;
         }
         return users;
@@ -45,7 +44,7 @@ contract Utilities is DSTest {
     //move block.number forward by a given number of blocks
     function mineBlocks(uint256 numBlocks) external {
         uint256 targetBlock = block.number + numBlocks;
-        hevm.roll(targetBlock);
+        vm.roll(targetBlock);
     }
 
     function getNamedUser(string memory name) external returns (address payable) {

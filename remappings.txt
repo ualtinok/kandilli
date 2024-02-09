@@ -1,5 +1,4 @@
-@openzeppelin/contracts-upgradeable=lib/openzeppelin-contracts-upgradeable/contracts
-@openzeppelin/contracts=lib/openzeppelin-contracts/contracts
-@chainlink/contracts=lib/chainlink/contracts
-@rari-capital/solmate=lib/solmate
-hardhat/=src/test/utils/
+@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/
+@prb/test/=node_modules/@prb/test/
+forge-std/=node_modules/forge-std/
+solady/=node_modules/solady/src/

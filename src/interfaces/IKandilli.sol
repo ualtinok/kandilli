@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.13;
 
 interface IKandilli {
     /**
@@ -8,9 +8,12 @@ interface IKandilli {
     enum KandilState {
         Created,
         Running,
-        WaitingVRFResult,
-        VRFSet,
+        RunningExtended,
+        WaitingSnuff,
+        WaitingWinnersProposal,
         WinnersProposed,
+        ChallengePeriod,
+        Ended,
         EndedWithoutBids
     }
 
@@ -36,13 +39,14 @@ interface IKandilli {
      * @param bidder: address of the bidder
      * @param timestamp: uint40 timestamp.
      * @param bidAmount: bid value in gwei
+     * @param index: index in bid array
      */
     struct KandilBidWithIndex {
         address payable bidder;
         uint40 timestamp;
         uint48 bidAmount;
         bool isProcessed;
-        uint16 index;
+        uint24 index;
     }
 
     /**
@@ -71,7 +75,7 @@ interface IKandilli {
      * @notice Settings for the auction
      * @param winnersProposalDepositAmount: deposit amount in gwei for sending winners proposal.
      * @param fraudChallengePeriod: Period in seconds for which fraud challenge is active.
-     * @param retroSnuffGas: Approximate gas cost of a retroSnuff call.
+     * @param snuffGas: Approximate gas cost of a snuff call.
      * @param winnersProposalGas: Approximate gas cost of a winners proposal call.
      * @param auctionTotalDuration: Total duration in seconds. (not timestamp, this + startTime is used as end timestamp)
      * @param maxWinnersPerAuction: Desired number of winners per auction.
@@ -80,19 +84,16 @@ interface IKandilli {
      * @param snuffPercentage: Percentage of candle snuff period in the total duration of auction.
      *      Ex: If the duration (definiteEndTime - startTime) is 10 days and snuffPercentage is %30 candle will get
      *      snuffed between 7 days and 10 days depending on vrfResult
-     * @param snuffRequiresSendingLink: If true, caller of the retroSnuffCandle() must approve Link tokens for contract and should have
-     *      enough Link to pay for the VRF function. (amount depends on chain, 2 Link for Ethereum mainnet)
      */
     struct KandilAuctionSettings {
         uint32 auctionTotalDuration;
         uint48 winnersProposalDepositAmount;
         uint32 fraudChallengePeriod;
-        uint32 retroSnuffGas;
+        uint32 snuffGas;
         uint32 winnersProposalGas;
         uint16 maxWinnersPerAuction;
         uint8 maxBountyMultiplier;
         uint8 snuffPercentage;
-        bool snuffRequiresSendingLink;
     }
 
     /**
@@ -119,8 +120,7 @@ interface IKandilli {
         uint32 settings;
         bool isFundsTransferred;
         KandilState auctionState;
-        uint40 vrfSetTime;
-        uint256 vrfResult;
+        uint256 entropyResult;
         KandilWinnersProposal winnersProposal;
         KandilSnuff snuff;
         KandilBid[] bids;
@@ -134,17 +134,24 @@ interface IKandilli {
 
     event SettingsUpdated(KandilAuctionSettings settings, uint256 settingsId);
 
-    event VRFFeeUpdated(uint256 vrfFee);
-
     event AuctionBid(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId, uint256 value);
 
     event AuctionBidIncrease(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId, uint256 value);
 
-    event AuctionWinnersProposed(address indexed sender, uint256 indexed auctionId, bytes32 hash);
+    event AuctionWinnersProposed(
+        address indexed sender,
+        uint256 indexed auctionId,
+        bytes32 hash,
+        uint256 winnerCount,
+        uint256 snuffBounty,
+        uint256 winnerProposalBounty
+    );
 
-    event CandleSnuffed(address indexed sender, uint256 indexed auctionId, bytes32 requestId);
+    event CandleSnuffed(address indexed sender, uint256 indexed auctionId, uint256 entropyResult);
 
-    event WinningBidClaimed(address indexed sender, uint256 indexed auctionId, uint256 bidId, address claimedto);
+    event WinningBidClaimed(
+        address indexed sender, uint256 indexed auctionId, uint256 indexed bidId, address claimedto, uint256 tokenId
+    );
 
     event LostBidWithdrawn(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId);
 
@@ -162,25 +169,15 @@ interface IKandilli {
 
     error BidWithPrecisionLowerThanGwei();
 
-    error AuctionIsNotRunning();
-
-    error CannotBidAfterAuctionEndTime();
-
     error MinimumBidAmountNotMet();
 
     error CannotIncreaseBidForNonOwnedBid();
 
     error CannotCreateNewAuctionBeforePreviousIsSettled();
 
-    error CannotProposeWinnersBeforeVRFSetOrWhenWinnersAlreadyPosted();
-
     error IncorrectHashForWinnerBids();
 
     error DepositAmountForWinnersProposalNotMet();
-
-    error CannotClaimAuctionItemBeforeWinnersProposed();
-
-    error CannotClaimAuctionItemBeforeChallengePeriodEnds();
 
     error WinnerProposalDataDoesntHaveCorrectHash();
 
@@ -190,25 +187,9 @@ interface IKandilli {
 
     error BidAlreadyClaimed();
 
-    error VRFRequestIdDoesntMatchToAnAuction();
-
-    error HouseDontHaveEnoughLinkToAskForVRF();
-
-    error UserDontHaveEnoughLinkToAskForVRF();
-
-    error CannotSnuffCandleForNotRunningAuction();
-
-    error CannotSnuffCandleBeforeDefiniteEndTime();
-
-    error ReceiveVRFWhenNotExpecting();
-
-    error CannotChallengeWinnersProposalBeforePosted();
-
-    error CannotChallengeWinnersProposalAfterChallengePeriodIsOver();
+    error KandilStateDoesntMatch();
 
     error CannotChallengeSelfProposal();
-
-    error WinnerProposerNeedToDepositLink();
 
     error CannotPaySnuffCandleBounty();
 
@@ -216,17 +197,7 @@ interface IKandilli {
 
     error EthTransferFailedDestOrAmountZero();
 
-    error LinkDepositFailed();
-
     error CannotClaimWinnersProposalBountyIfNotProposer();
-
-    error CannotClaimWinnersProposalBountyBeforeChallengePeriodIsOver();
-
-    error CannotClaimWinnersProposalBountyBeforePosted();
-
-    error CannotWithdrawLostBidBeforeChallengePeriodEnds();
-
-    error CannotWithdrawLostBidBeforeWinnersProposed();
 
     error CannotWithdrawLostBidIfIncludedInWinnersProposal();
 
@@ -242,19 +213,11 @@ interface IKandilli {
 
     error ChallengeFailedBidIdToIncludeIsNotInBidList();
 
-    error CannotTransferFundsBeforeWinnersProposed();
-
-    error CannotTransferFundsBeforeChallengePeriodEnds();
-
     error FundsAlreadyTransferred();
 
     error BidIdDoesntExist();
 
-    error CannotClaimSnuffBountyBeforeWinnersProposed();
-
     error CannotClaimSnuffBountyBeforeIfNotSnuffer();
-
-    error CannotClaimSnuffBountyBeforeChallengePeriodIsOver();
 
     error WinnersProposalBountyAlreadyClaimed();
 
@@ -274,8 +237,6 @@ interface IKandilli {
 
     function reset(KandilAuctionSettings memory _settings) external;
 
-    function setVRFFee(uint256 _vrfFee) external;
-
     function addBidToAuction(uint256 _auctionId) external payable returns (uint256);
 
     function increaseAmountOfBid(uint256 _auctionId, uint256 _bidId) external payable;
@@ -291,19 +252,15 @@ interface IKandilli {
         uint256 _auctionId,
         bytes memory _winnerBidIndexesBytes,
         bytes32 _hash,
-        uint16 _bidIndexToInclude
+        uint24 _bidIndexToInclude
     ) external;
 
     function claimWinnersProposalBounty(uint256 _auctionId) external;
 
     function claimSnuffBounty(uint256 _auctionId) external;
 
-    function withdrawLostBid(
-        uint256 _auctionId,
-        uint256 _bidIndex,
-        bytes32 hash,
-        bytes memory _winnerBidIndexesBytes
-    ) external;
+    function withdrawLostBid(uint256 _auctionId, uint256 _bidIndex, bytes32 hash, bytes memory _winnerBidIndexesBytes)
+        external;
 
     function withdrawLostBidAfterAllWinnersClaimed(uint256 _auctionId, uint256 _bidIndex) external;
 
@@ -314,15 +271,14 @@ interface IKandilli {
         uint256 _winnerBidIdIndex
     ) external;
 
-    function retroSnuffCandle(uint256 _auctionId) external returns (bytes32);
+    function snuffCandle(uint256 _auctionId) external;
 
     function transferAuctionFundsToOwner(uint256 _auctionId) external;
 
-    function getAuctionBids(
-        uint256 _auctionId,
-        uint256 _page,
-        uint256 _limit
-    ) external view returns (KandilBid[] memory bids);
+    function getAuctionBids(uint256 _auctionId, uint256 _page, uint256 _limit)
+        external
+        view
+        returns (KandilBid[] memory bids);
 
     function getAuctionCandleSnuffedTime(uint256 _auctionId) external view returns (uint256);
 
@@ -332,11 +288,9 @@ interface IKandilli {
 
     function getAuctionSnuffPercentage(uint256 _auctionId) external view returns (uint256);
 
-    function getAuctionRetroSnuffBounty(uint256 _auctionId) external view returns (uint256 r);
+    function getAuctionSnuffBounty(uint256 _auctionId) external view returns (uint256 r);
 
     function getAuctionMaxWinnerCount(uint256 _auctionId) external view returns (uint256);
-
-    function getAuctionVRF(uint256 _auctionId) external view returns (uint256);
 
     function getAuctionRequiredWinnersProposalDeposit(uint256 _auctionId) external view returns (uint256);
 

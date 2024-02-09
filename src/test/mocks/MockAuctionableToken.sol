@@ -14,8 +14,9 @@ contract MockAuctionableToken is IAuctionable, ERC721, Ownable {
         _transferOwnership(msg.sender);
     }
 
-    function settle(address to, uint256 entropy) external {
+    function settle(address to, uint256 entropy) external returns (uint256 tokenId) {
         uniq[counter] = entropy;
+        tokenId = counter;
         _safeMint(to, counter++);
     }
 

@@ -1,76 +1,77 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.0;
 
-import {DSTest} from "ds-test/test.sol";
-import {Utilities} from "./utils/Utilities.sol";
-import {console} from "./utils/Console.sol";
-import "forge-std/Vm.sol";
+import {PRBTest} from "@prb/test/src/PRBTest.sol";
+import {Utilities} from "../test/utils/Utilities.sol";
+import {console2} from "forge-std/src/console2.sol";
+import {StdCheats} from "forge-std/src/StdCheats.sol";
+import {Vm} from "forge-std/src/Vm.sol";
 import {Kandilli} from "../Kandilli.sol";
 import {MockAuctionableToken} from "./mocks/MockAuctionableToken.sol";
 import {WETH} from "./mocks/WETH.sol";
-import {LinkTokenMock} from "./mocks/LinkTokenMock.sol";
-import {VRFCoordinatorMock} from "chainlink/contracts/src/v0.8/mocks/VRFCoordinatorMock.sol";
 import {IKandilli} from "../interfaces/IKandilli.sol";
 import {Helpers} from "../libraries/Helpers.sol";
-import "../../lib/openzeppelin-contracts/contracts/mocks/SafeERC20Helper.sol";
-import {Strings} from "../../lib/openzeppelin-contracts/contracts/utils/Strings.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 
-struct ProposeWinnersResult {
-    bytes32 hash;
-    uint16[] winnerBidIds;
-    bytes winnerBidIdsBytes;
-    IKandilli.KandilBidWithIndex[] nBids;
-    IKandilli.KandilBid[] bids;
-    uint256 vrfResult;
-    uint256 numWinners;
-    uint256 snuffTime;
-    uint64 totalBidAmount;
-}
+    struct ProposeWinnersResult {
+        bytes32 hash;
+        uint24[] winnerBidIds;
+        bytes winnerBidIdsBytes;
+        IKandilli.KandilBidWithIndex[] nBids;
+        IKandilli.KandilBid[] bids;
+        uint256 entropyResult;
+        uint256 numWinners;
+        uint256 snuffTime;
+        uint64 totalBidAmount;
+    }
 
-contract KandilliTest is DSTest {
+contract KandilliTest is PRBTest, StdCheats {
     using Strings for uint256;
 
     event AuctionStarted(uint256 indexed auctionId, uint256 minBidAmount, uint256 settingsId);
     event SettingsUpdated(IKandilli.KandilAuctionSettings settings, uint256 settingsId);
     event AuctionBid(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId, uint256 value);
     event AuctionBidIncrease(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId, uint256 value);
-    event AuctionWinnersProposed(address indexed sender, uint256 indexed auctionId, bytes32 hash);
-    event CandleSnuffed(address indexed sender, uint256 indexed auctionId, bytes32 requestId);
-    event WinningBidClaimed(address indexed sender, uint256 indexed auctionId, uint256 bidId, address claimedto);
+    event AuctionWinnersProposed(
+        address indexed sender,
+        uint256 indexed auctionId,
+        bytes32 hash,
+        uint256 winnerCount,
+        uint256 snuffBounty,
+        uint256 winnerProposalBounty
+    );
+    event CandleSnuffed(address indexed sender, uint256 indexed auctionId, uint256 entropyResult);
+    event WinningBidClaimed(
+        address indexed sender, uint256 indexed auctionId, uint256 indexed bidId, address claimedto, uint256 tokenId
+    );
     event LostBidWithdrawn(address indexed sender, uint256 indexed auctionId, uint256 indexed bidId);
     event WinnersProposalBountyClaimed(address indexed sender, uint256 indexed auctionId, uint256 amount);
     event SnuffBountyClaimed(address indexed sender, uint256 indexed auctionId, uint256 amount);
     event ChallengeSucceded(address indexed sender, uint256 indexed auctionId, uint256 reason);
     event Approval(address indexed owner, address indexed spender, uint256 value);
 
-    Vm internal immutable vm = Vm(HEVM_ADDRESS);
-
     Utilities internal utils;
     Kandilli internal kandilli;
     MockAuctionableToken internal mockAuctionableToken;
-    LinkTokenMock internal linkToken;
-    VRFCoordinatorMock internal vrfCoordinatorMock;
     WETH internal weth;
     address payable[] internal users;
     address payable internal alice;
     address payable internal bob;
 
     uint48 internal winnersProposalDeposit = (1 ether) / (1 gwei); // 1 ether
-    uint16 internal maxNumWinners = 64; // 32 users
     uint32 internal auctionTotalDuration = 259200; // 3 days
     uint32 internal fraudChallengePeriod = 10800; // 3 hours
-    uint32 internal retroSnuffGas = 400_000; // 200k gas
+    uint32 internal snuffGas = 400_000; // 200k gas
     uint32 internal postWinnerGasCost = 500_000; // 200k gas
-    uint64 internal vrfFee = 100_000;
-    bytes32 internal keyHash = 0x6c3699283bda56ad74f6b855546325b68d482e983852a7a82979cc4807b641f4;
     // If you change this make sure there's less winners than bids that are before snuff time.
     // Otherwise some tests will fail.
-    uint256 internal randomE = 18392480285055155400540772292264222449548204563388120189582018752977384988357;
-    //uint256 internal randomE = 65767386873957718740268074328995333784005072918202063793299981458799458871201; // single bid, 0 winners
-    uint8 internal maxBountyMultiplier = 10;
-    uint8 internal snuffPercentage = 30;
+    uint16 internal initMaxNumWinners = 32; // 32 users
+    uint8 internal initMaxBountyMultiplier = 10;
+    uint8 internal initSnuffPercentage = 30;
 
-    bool userPaysLink = false;
+    bytes32 internal keyHash = 0x6c3699283bda56ad74f6b855546325b68d482e983852a7a82979cc4807b641f4;
+
+    uint256 internal randomE = 18392480285055155400540772292264222449548204563388120189582018752977384988357;
 
     // This is to get a random number via FFI. Can comment out and enable ffi via (test --ffi or via toml)
     // Requires nodejs installed
@@ -89,39 +90,23 @@ contract KandilliTest is DSTest {
         alice = users[0];
         bob = users[1];
         mockAuctionableToken = new MockAuctionableToken();
-        // Give users[0] link tokens
-        linkToken = new LinkTokenMock("LinkToken", "LINK", users[0], 5e18);
-        vrfCoordinatorMock = new VRFCoordinatorMock(address(linkToken));
         weth = new WETH();
         settings = IKandilli.KandilAuctionSettings({
             winnersProposalDepositAmount: winnersProposalDeposit,
             fraudChallengePeriod: fraudChallengePeriod,
-            retroSnuffGas: retroSnuffGas,
+            snuffGas: snuffGas,
             winnersProposalGas: postWinnerGasCost,
             auctionTotalDuration: auctionTotalDuration,
-            maxWinnersPerAuction: maxNumWinners,
-            maxBountyMultiplier: maxBountyMultiplier,
-            snuffPercentage: snuffPercentage,
-            snuffRequiresSendingLink: false
+            maxWinnersPerAuction: initMaxNumWinners,
+            maxBountyMultiplier: initMaxBountyMultiplier,
+            snuffPercentage: initSnuffPercentage
         });
         uint16[96] memory initialBidAmounts;
         for (uint256 i = 0; i < 96; i++) {
             initialBidAmounts[i] = 100;
         }
         vm.prank(utils.getNamedUser("deployer"));
-        kandilli = new Kandilli(
-            mockAuctionableToken,
-            initialBidAmounts,
-            address(weth),
-            address(linkToken),
-            address(vrfCoordinatorMock),
-            vrfFee,
-            keyHash
-        );
-
-        if (!userPaysLink) {
-            linkToken.mint(address(kandilli), 5e18);
-        }
+        kandilli = new Kandilli(mockAuctionableToken, initialBidAmounts, address(weth));
     }
 
     function testInit() public {
@@ -133,7 +118,7 @@ contract KandilliTest is DSTest {
         kandilli.init(settings);
     }
 
-    function testBids(uint256 randomE) public {
+    function testBids() public {
         vm.prank(utils.getNamedUser("deployer"));
         kandilli.init(settings);
         uint256 auctionId = 1;
@@ -153,7 +138,7 @@ contract KandilliTest is DSTest {
         kandilli.addBidToAuction{value: minBidAmount - (1 gwei)}(auctionId);
 
         // Fail if auction doesn't exist
-        vm.expectRevert(abi.encodeWithSignature("AuctionIsNotRunning()"));
+        vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
         kandilli.addBidToAuction{value: 1 ether}(99);
 
         // Fail if lower then gwei precision bid
@@ -163,11 +148,11 @@ contract KandilliTest is DSTest {
 
         vm.prank(alice);
         vm.warp(startTime + auctionTotalDuration + 1);
-        vm.expectRevert(abi.encodeWithSignature("CannotBidAfterAuctionEndTime()"));
+        vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
         kandilli.addBidToAuction{value: 1 ether}(auctionId);
     }
 
-    function testIncreaseBid(uint256 randomE) public {
+    function testIncreaseBid() public {
         vm.prank(utils.getNamedUser("deployer"));
         kandilli.init(settings);
         uint256 auctionId = 1;
@@ -188,23 +173,18 @@ contract KandilliTest is DSTest {
         IKandilli.KandilBid[] memory bids = kandilli.getAuctionBids(auctionId, 0, 1000);
         // Bid amount is in gwei inside KandilBid struct
         assertEq(uint256(bids[bidId].bidAmount) * (1 gwei), 2 ether);
-
+        vm.stopPrank();
         // Fail when try to increase someone else's bid
         vm.startPrank(bob);
         vm.expectRevert(abi.encodeWithSignature("CannotIncreaseBidForNonOwnedBid()"));
         kandilli.increaseAmountOfBid{value: 1 ether}(auctionId, bidId);
     }
 
-    function testSnuffCandle(
-        uint256 randomE,
-        uint16 timePassed,
-        bool isLinkRequired
-    ) public {
+    function testSnuffCandle(uint256 randomE, uint16 timePassed) public {
         /*        uint256 randomE = 65767386873957718740268074328995333784005072918202063793299981458799458871201;
-        uint16 timePassed = 0;
-        bool isLinkRequired = false;*/
+        uint16 timePassed = 0;*/
+        vm.prevrandao(bytes32(randomE));
         vm.startPrank(utils.getNamedUser("deployer"));
-        settings.snuffRequiresSendingLink = isLinkRequired;
         kandilli.init(settings);
         vm.stopPrank();
 
@@ -212,103 +192,82 @@ contract KandilliTest is DSTest {
         uint256 numBids = randomE % maxTestBidCount;
         uint256 startTime = kandilli.getAuctionStartTime(auctionId);
         uint256 maxNumWinners = kandilli.getAuctionMaxWinnerCount(auctionId);
-        console.log("maxNumWinners: ", maxNumWinners);
-        console.log("numBids: ", numBids);
-        console.log("bal: ", address(kandilli).balance);
+        console2.log("maxNumWinners: ", maxNumWinners);
+        console2.log("numBids: ", numBids);
+        console2.log("bal: ", address(kandilli).balance);
 
-        bool allBidsAreWinners = numBids <= maxNumWinners;
         _sendBids(auctionId, numBids, startTime, randomE);
-        console.log("bal3: ", address(kandilli).balance);
+        console2.log("bal3: ", address(kandilli).balance);
 
-        vm.expectRevert(abi.encodeWithSignature("CannotSnuffCandleBeforeDefiniteEndTime()"));
-        kandilli.retroSnuffCandle(1);
+        vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
+        kandilli.snuffCandle(1);
 
-        vm.expectRevert(abi.encodeWithSignature("CannotSnuffCandleForNotRunningAuction()"));
-        kandilli.retroSnuffCandle(99);
+        vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
+        kandilli.snuffCandle(99);
 
-        //uint256 aliceOldBalance = alice.balance;
         vm.warp(startTime + auctionTotalDuration + timePassed);
-        /*        uint256 bounty = kandilli.getAuctionRetroSnuffBounty(auctionId);
-        uint256 minimumAmountCollected = kandilli.getAuctionMinimumBidAmount(auctionId) * (1 gwei) * numBids;
-        bounty = bounty < minimumAmountCollected ? bounty : minimumAmountCollected;
-        assertLe(bounty, uint256(maxBountyMultiplier) * uint256(retroSnuffGas) * (100 gwei));*/
 
         if (numBids == 0) {
             vm.startPrank(alice);
             vm.expectEmit(true, false, false, true);
-            emit CandleSnuffed(alice, auctionId, bytes32(0));
-            bytes32 reqId = kandilli.retroSnuffCandle(auctionId);
-            assertEq(reqId, bytes32(0));
+            emit CandleSnuffed(alice, auctionId, block.prevrandao);
+            kandilli.snuffCandle(auctionId);
             IKandilli.KandilState state = kandilli.getAuctionState(auctionId);
             assertEq(uint256(state), uint256(IKandilli.KandilState.EndedWithoutBids));
             vm.stopPrank();
             return;
         }
 
-        if (isLinkRequired) {
-            vm.prank(bob);
-            vm.expectRevert(abi.encodeWithSignature("UserDontHaveEnoughLinkToAskForVRF()"));
-            kandilli.retroSnuffCandle(auctionId);
-
-            vm.startPrank(alice);
-            vm.expectRevert("ERC20: transfer amount exceeds allowance");
-            kandilli.retroSnuffCandle(auctionId);
-            vm.stopPrank();
-        }
-
         {
             vm.startPrank(alice);
-            if (isLinkRequired) {
-                linkToken.approve(address(kandilli), vrfFee);
-            } else {
-                // Only alice (users[0]) have link tokens.
-                linkToken.transfer(address(kandilli), vrfFee);
-            }
             vm.expectEmit(true, false, false, false);
-            emit CandleSnuffed(alice, auctionId, bytes32(0));
-            bytes32 requestId = kandilli.retroSnuffCandle(auctionId);
-            vrfCoordinatorMock.callBackWithRandomness(requestId, randomE, address(kandilli));
-            //uint256 aliceNewBalance = alice.balance;
-            //assertEq(aliceNewBalance - aliceOldBalance, bounty);
+            emit CandleSnuffed(alice, auctionId, block.prevrandao);
+            kandilli.snuffCandle(auctionId);
             vm.stopPrank();
         }
 
         {
+            uint256 entropy = kandilli.getAuctionEntropy(auctionId);
             uint256 snuffTime = kandilli.getAuctionCandleSnuffedTime(auctionId);
             uint256 endTime = kandilli.getAuctionDefiniteEndTime(auctionId);
             uint256 snuffPercentage = kandilli.getAuctionSnuffPercentage(auctionId);
             uint256 snuffEarliestPossibleTime = endTime - (((endTime - startTime) * snuffPercentage) / 100);
 
+            console2.log("entropy: ", entropy);
             assertGt(snuffTime, startTime);
             assertLt(snuffTime, endTime);
-            assertGe(snuffTime, snuffEarliestPossibleTime);
+            assertGte(snuffTime, snuffEarliestPossibleTime);
         }
 
         // Fail when trying to candle that's already snuffed
-        vm.expectRevert(abi.encodeWithSignature("CannotSnuffCandleForNotRunningAuction()"));
-        kandilli.retroSnuffCandle(auctionId);
+        vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
+        kandilli.snuffCandle(auctionId);
 
-        vm.expectRevert(abi.encodeWithSignature("CannotClaimSnuffBountyBeforeWinnersProposed()"));
+        vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
         kandilli.claimSnuffBounty(auctionId);
 
-        uint256 currentSnuffBounty = kandilli.getAuctionRetroSnuffBounty(auctionId);
+        uint256 currentSnuffBounty = kandilli.getAuctionSnuffBounty(auctionId);
         assertEq(currentSnuffBounty, 0);
 
         ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, true);
-        console.log("tot", pwr.totalBidAmount);
-        console.log("numWinner", pwr.numWinners);
-        vm.expectRevert(abi.encodeWithSignature("CannotClaimSnuffBountyBeforeIfNotSnuffer()"));
-        kandilli.claimSnuffBounty(auctionId);
+        console2.log("tot", pwr.totalBidAmount);
+        console2.log("numWinner", pwr.numWinners);
 
         vm.startPrank(alice);
 
-        vm.expectRevert(abi.encodeWithSignature("CannotClaimSnuffBountyBeforeChallengePeriodIsOver()"));
+        vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
         kandilli.claimSnuffBounty(auctionId);
 
         uint256 proposalTime = kandilli.getAuctionWinnerProposalTime(auctionId);
         vm.warp(proposalTime + fraudChallengePeriod + 1);
 
-        currentSnuffBounty = kandilli.getAuctionRetroSnuffBounty(auctionId);
+        currentSnuffBounty = kandilli.getAuctionSnuffBounty(auctionId);
+
+        vm.stopPrank();
+        vm.expectRevert(abi.encodeWithSignature("CannotClaimSnuffBountyBeforeIfNotSnuffer()"));
+        kandilli.claimSnuffBounty(auctionId);
+
+        vm.startPrank(alice);
         if (currentSnuffBounty > 0) {
             uint256 beforeBalance = alice.balance;
             kandilli.claimSnuffBounty(auctionId);
@@ -318,7 +277,7 @@ contract KandilliTest is DSTest {
     }
 
     function testProposeWinners(uint256 randomE) public {
-        //uint256 randomE = 1858916283958370368913553293944955234632628839575658048919750774306277050000;
+        //uint256 randomE = 511509300450453690715166972283816001;
         vm.prank(utils.getNamedUser("deployer"));
         kandilli.init(settings);
 
@@ -328,14 +287,14 @@ contract KandilliTest is DSTest {
         uint256 numBids = randomE % maxTestBidCount;
         // Fail when posting winners before candle snuffed
         {
-            uint16[] memory dummyWinnerIds = new uint16[](3);
+            uint24[] memory dummyWinnerIds = new uint24[](3);
             bytes32 dummyHash = keccak256(abi.encodePacked("x"));
 
             dummyWinnerIds[0] = 3;
             dummyWinnerIds[1] = 3;
             dummyWinnerIds[2] = 3;
-            vm.expectRevert(abi.encodeWithSignature("CannotProposeWinnersBeforeVRFSetOrWhenWinnersAlreadyPosted()"));
-            kandilli.proposeWinners{value: depositAmount}(auctionId, uint16ArrToBytes(dummyWinnerIds), dummyHash, 0);
+            vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
+            kandilli.proposeWinners{value: depositAmount}(auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, 0);
         }
 
         _sendBids(auctionId, numBids, startTime, randomE);
@@ -345,26 +304,23 @@ contract KandilliTest is DSTest {
 
         // No bids
         if (state == IKandilli.KandilState.EndedWithoutBids) {
-            uint16[] memory dummyWinnerIds = new uint16[](3);
+            uint24[] memory dummyWinnerIds = new uint24[](3);
             bytes32 dummyHash = keccak256(abi.encodePacked("x"));
 
             dummyWinnerIds[0] = 3;
             dummyWinnerIds[1] = 3;
             dummyWinnerIds[2] = 3;
-            vm.expectRevert(abi.encodeWithSignature("CannotProposeWinnersBeforeVRFSetOrWhenWinnersAlreadyPosted()"));
-            kandilli.proposeWinners{value: depositAmount}(auctionId, uint16ArrToBytes(dummyWinnerIds), dummyHash, 0);
+            vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
+            kandilli.proposeWinners{value: depositAmount}(auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, 0);
 
             return;
         }
-        assertEq(uint256(state), uint256(IKandilli.KandilState.VRFSet));
+        assertEq(uint256(state), uint256(IKandilli.KandilState.WaitingWinnersProposal));
         ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, false);
         // Fail when posting winners with wrong hash
         vm.expectRevert(abi.encodeWithSignature("IncorrectHashForWinnerBids()"));
         kandilli.proposeWinners{value: depositAmount}(
-            auctionId,
-            pwr.winnerBidIdsBytes,
-            keccak256(abi.encodePacked("x")),
-            pwr.totalBidAmount
+            auctionId, pwr.winnerBidIdsBytes, keccak256(abi.encodePacked("x")), pwr.totalBidAmount
         );
 
         bytes32 hash = keccak256(abi.encodePacked(pwr.winnerBidIdsBytes));
@@ -375,15 +331,34 @@ contract KandilliTest is DSTest {
 
         // Succeed to post winners and check balance
         {
+            uint256 proposalBounty = kandilli.getAuctionPotentialWinnersProposalBounty(auctionId);
+            uint256 snuffBounty = kandilli.getAuctionPotentialSnuffBounty(auctionId);
+            uint256 minB = kandilli.getAuctionMinimumBidAmount(auctionId);
+
+            // Check actual bounties based on winner proposal
+            uint256 totalMinBids = pwr.numWinners * minB;
+            uint256 totalBidAmount = pwr.totalBidAmount * (1 gwei);
+            if (totalBidAmount > totalMinBids) {
+                uint256 extraFunds = totalBidAmount - totalMinBids;
+                proposalBounty = proposalBounty < extraFunds ? proposalBounty : extraFunds;
+            } else {
+                // No bounty for proposing winners as we haven't got extra from bids. We prioritize auctionable settling.
+                proposalBounty = 0;
+            }
+            // Here we check how much extra we have to give for bounty. We also need to substract winners proposal bounty.
+            if (totalBidAmount > totalMinBids + proposalBounty) {
+                uint256 extraFunds = totalBidAmount - totalMinBids - proposalBounty;
+                snuffBounty = snuffBounty < extraFunds ? snuffBounty : extraFunds;
+            } else {
+                snuffBounty = 0;
+            }
+
             uint256 aliceBalanceBefore = alice.balance;
             vm.prank(alice);
             vm.expectEmit(true, false, false, true);
-            emit AuctionWinnersProposed(alice, auctionId, pwr.hash);
+            emit AuctionWinnersProposed(alice, auctionId, pwr.hash, pwr.numWinners, snuffBounty, proposalBounty);
             kandilli.proposeWinners{value: depositAmount}(
-                auctionId,
-                pwr.winnerBidIdsBytes,
-                pwr.hash,
-                pwr.totalBidAmount
+                auctionId, pwr.winnerBidIdsBytes, pwr.hash, pwr.totalBidAmount
             );
             uint256 aliceBalanceAfter = alice.balance;
             assertEq(aliceBalanceBefore - aliceBalanceAfter, depositAmount);
@@ -391,12 +366,9 @@ contract KandilliTest is DSTest {
 
         // Fail when posting winners a second time
         {
-            vm.expectRevert(abi.encodeWithSignature("CannotProposeWinnersBeforeVRFSetOrWhenWinnersAlreadyPosted()"));
+            vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
             kandilli.proposeWinners{value: depositAmount}(
-                auctionId,
-                pwr.winnerBidIdsBytes,
-                pwr.hash,
-                pwr.totalBidAmount
+                auctionId, pwr.winnerBidIdsBytes, pwr.hash, pwr.totalBidAmount
             );
         }
         //uint256 totalPaidProposalBounty = kandilli.getAuctionWinnersProposalBounty(auctionId);
@@ -411,12 +383,12 @@ contract KandilliTest is DSTest {
         uint256 startTime = kandilli.getAuctionStartTime(auctionId);
         uint256 numBids = (randomE % maxTestBidCount) + 1; // Need at least 1 bid to claim token.
 
-        uint16[] memory dummyWinnerIds = new uint16[](3);
+        uint24[] memory dummyWinnerIds = new uint24[](3);
         _sendBids(auctionId, numBids, startTime, randomE);
         _snuffCandle(auctionId, randomE, startTime);
 
-        vm.expectRevert(abi.encodeWithSignature("CannotClaimAuctionItemBeforeWinnersProposed()"));
-        kandilli.claimWinningBid(auctionId, bytes32(0), uint16ArrToBytes(dummyWinnerIds), 0);
+        vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
+        kandilli.claimWinningBid(auctionId, bytes32(0), uint24ArrToBytes(dummyWinnerIds), 0);
 
         ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, true);
 
@@ -424,7 +396,7 @@ contract KandilliTest is DSTest {
             // TODO: vm.assume
             return;
         }
-        vm.expectRevert(abi.encodeWithSignature("CannotClaimAuctionItemBeforeChallengePeriodEnds()"));
+        vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
         kandilli.claimWinningBid(auctionId, pwr.hash, pwr.winnerBidIdsBytes, 0);
 
         uint256 proposalTime = kandilli.getAuctionWinnerProposalTime(auctionId);
@@ -433,16 +405,16 @@ contract KandilliTest is DSTest {
         vm.expectRevert(abi.encodeWithSignature("BidIdDoesntExist()"));
         kandilli.claimWinningBid(auctionId, pwr.hash, pwr.winnerBidIdsBytes, pwr.winnerBidIds.length);
 
-        bytes32 dummyHash = keccak256(abi.encodePacked(uint16ArrToBytes(dummyWinnerIds)));
+        bytes32 dummyHash = keccak256(abi.encodePacked(uint24ArrToBytes(dummyWinnerIds)));
         dummyWinnerIds[0] = 0;
         dummyWinnerIds[1] = 4;
         dummyWinnerIds[2] = 4;
 
         vm.expectRevert(abi.encodeWithSignature("WinnerProposalDataDoesntHaveCorrectHash()"));
-        kandilli.claimWinningBid(auctionId, dummyHash, uint16ArrToBytes(dummyWinnerIds), 0);
-        dummyHash = keccak256(abi.encodePacked(uint16ArrToBytes(dummyWinnerIds)));
+        kandilli.claimWinningBid(auctionId, dummyHash, uint24ArrToBytes(dummyWinnerIds), 0);
+        dummyHash = keccak256(abi.encodePacked(uint24ArrToBytes(dummyWinnerIds)));
         vm.expectRevert(abi.encodeWithSignature("WinnerProposalHashDoesntMatchPostedHash()"));
-        kandilli.claimWinningBid(auctionId, dummyHash, uint16ArrToBytes(dummyWinnerIds), 0);
+        kandilli.claimWinningBid(auctionId, dummyHash, uint24ArrToBytes(dummyWinnerIds), 0);
 
         uint256 toClaimId = randomE % pwr.winnerBidIds.length;
 
@@ -451,19 +423,14 @@ contract KandilliTest is DSTest {
         vm.prank(someOtherUser);
         vm.expectEmit(true, false, false, true);
         emit WinningBidClaimed(
-            someOtherUser,
-            1,
-            pwr.winnerBidIds[toClaimId],
-            pwr.bids[pwr.winnerBidIds[toClaimId]].bidder
+            someOtherUser, 1, pwr.winnerBidIds[toClaimId], pwr.bids[pwr.winnerBidIds[toClaimId]].bidder, 0
         );
         kandilli.claimWinningBid(auctionId, pwr.hash, pwr.winnerBidIdsBytes, toClaimId);
         uint256 claimBounty = kandilli.getAuctionMinimumBidAmount(auctionId);
 
         // Check if someOtherUser received right bounty.
         assertEq(
-            claimBounty,
-            someOtherUser.balance - someOtherUserBeforeBalance,
-            "Received bounty for snuff is incorrect"
+            claimBounty, someOtherUser.balance - someOtherUserBeforeBalance, "Received bounty for snuff is incorrect"
         );
 
         // Check if bidder received token.
@@ -475,9 +442,7 @@ contract KandilliTest is DSTest {
 
         // Check that someOtherUser did not receive any tokens.
         assertEq(
-            mockAuctionableToken.balanceOf(someOtherUser),
-            0,
-            "SomeOtherUser received tokens, when she shouldn't have"
+            mockAuctionableToken.balanceOf(someOtherUser), 0, "SomeOtherUser received tokens, when she shouldn't have"
         );
 
         // Fail to claim tokens that are already claimed.
@@ -502,17 +467,17 @@ contract KandilliTest is DSTest {
         uint256 proposalTime = kandilli.getAuctionWinnerProposalTime(auctionId);
         vm.warp(proposalTime + fraudChallengePeriod + 1);
 
-        uint16[] memory dummyWinnerIds = new uint16[](3);
-        bytes32 dummyHash = keccak256(abi.encodePacked(uint16ArrToBytes(dummyWinnerIds)));
+        uint24[] memory dummyWinnerIds = new uint24[](3);
+        bytes32 dummyHash = keccak256(abi.encodePacked(uint24ArrToBytes(dummyWinnerIds)));
         dummyWinnerIds[0] = 0;
         dummyWinnerIds[1] = 4;
         dummyWinnerIds[2] = 1;
         vm.expectRevert(abi.encodeWithSignature("WinnerProposalDataDoesntHaveCorrectHash()"));
-        kandilli.withdrawLostBid(auctionId, dummyWinnerIds[0], dummyHash, uint16ArrToBytes(dummyWinnerIds));
+        kandilli.withdrawLostBid(auctionId, dummyWinnerIds[0], dummyHash, uint24ArrToBytes(dummyWinnerIds));
 
-        dummyHash = keccak256(abi.encodePacked(uint16ArrToBytes(dummyWinnerIds)));
+        dummyHash = keccak256(abi.encodePacked(uint24ArrToBytes(dummyWinnerIds)));
         vm.expectRevert(abi.encodeWithSignature("WinnerProposalHashDoesntMatchPostedHash()"));
-        kandilli.withdrawLostBid(auctionId, dummyWinnerIds[0], dummyHash, uint16ArrToBytes(dummyWinnerIds));
+        kandilli.withdrawLostBid(auctionId, dummyWinnerIds[0], dummyHash, uint24ArrToBytes(dummyWinnerIds));
 
         vm.expectRevert(abi.encodeWithSignature("CannotWithdrawLostBidIfIncludedInWinnersProposal()"));
         kandilli.withdrawLostBid(auctionId, pwr.winnerBidIds[0], pwr.hash, pwr.winnerBidIdsBytes);
@@ -558,13 +523,10 @@ contract KandilliTest is DSTest {
         ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, false);
         // Send more winner bids than total bid count
         {
-            uint16[] memory dummyWinnerIds = new uint16[](pwr.bids.length + 1);
-            bytes32 dummyHash = keccak256(abi.encodePacked(uint16ArrToBytes(dummyWinnerIds)));
+            uint24[] memory dummyWinnerIds = new uint24[](pwr.bids.length + 1);
+            bytes32 dummyHash = keccak256(abi.encodePacked(uint24ArrToBytes(dummyWinnerIds)));
             kandilli.proposeWinners{value: depositAmount}(
-                auctionId,
-                uint16ArrToBytes(dummyWinnerIds),
-                dummyHash,
-                pwr.totalBidAmount
+                auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, pwr.totalBidAmount
             );
             address challenger = utils.getNamedUser("challenger");
 
@@ -572,23 +534,20 @@ contract KandilliTest is DSTest {
             emit ChallengeSucceded(challenger, auctionId, 1);
             vm.prank(challenger);
             uint256 chalBalBefore = challenger.balance;
-            kandilli.challengeProposedWinners(auctionId, uint16ArrToBytes(dummyWinnerIds), dummyHash, 1);
+            kandilli.challengeProposedWinners(auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, 1);
             uint256 chalBalAfter = challenger.balance;
             assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough bounty");
         }
 
         // Send duplicate winner bids
         if (pwr.numWinners > 2) {
-            uint16[] memory dummyWinnerIds = new uint16[](3);
+            uint24[] memory dummyWinnerIds = new uint24[](3);
             dummyWinnerIds[0] = pwr.winnerBidIds[0];
             dummyWinnerIds[1] = pwr.winnerBidIds[1];
             dummyWinnerIds[2] = pwr.winnerBidIds[0];
-            bytes32 dummyHash = keccak256(abi.encodePacked(uint16ArrToBytes(dummyWinnerIds)));
+            bytes32 dummyHash = keccak256(abi.encodePacked(uint24ArrToBytes(dummyWinnerIds)));
             kandilli.proposeWinners{value: depositAmount}(
-                auctionId,
-                uint16ArrToBytes(dummyWinnerIds),
-                dummyHash,
-                pwr.totalBidAmount
+                auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, pwr.totalBidAmount
             );
             address challenger = utils.getNamedUser("challenger");
 
@@ -597,10 +556,7 @@ contract KandilliTest is DSTest {
             vm.prank(challenger);
             uint256 chalBalBefore = challenger.balance;
             kandilli.challengeProposedWinners(
-                auctionId,
-                uint16ArrToBytes(dummyWinnerIds),
-                dummyHash,
-                pwr.winnerBidIds[2]
+                auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, pwr.winnerBidIds[2]
             );
             uint256 chalBalAfter = challenger.balance;
             assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough bounty");
@@ -608,17 +564,14 @@ contract KandilliTest is DSTest {
 
         // Propose bigger winner index than total bid count.
         if (pwr.numWinners > 0) {
-            uint16[] memory dummyWinnerIds = new uint16[](pwr.numWinners);
+            uint24[] memory dummyWinnerIds = new uint24[](pwr.numWinners);
             for (uint256 i = 0; i < pwr.numWinners; i++) {
                 dummyWinnerIds[i] = pwr.winnerBidIds[i];
             }
             dummyWinnerIds[0] = uint16(pwr.bids.length);
-            bytes32 dummyHash = keccak256(abi.encodePacked(uint16ArrToBytes(dummyWinnerIds)));
+            bytes32 dummyHash = keccak256(abi.encodePacked(uint24ArrToBytes(dummyWinnerIds)));
             kandilli.proposeWinners{value: depositAmount}(
-                auctionId,
-                uint16ArrToBytes(dummyWinnerIds),
-                dummyHash,
-                pwr.totalBidAmount
+                auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, pwr.totalBidAmount
             );
             address challenger = utils.getNamedUser("challenger");
 
@@ -626,30 +579,27 @@ contract KandilliTest is DSTest {
             emit ChallengeSucceded(challenger, auctionId, 3);
             vm.prank(challenger);
             uint256 chalBalBefore = challenger.balance;
-            kandilli.challengeProposedWinners(auctionId, uint16ArrToBytes(dummyWinnerIds), dummyHash, type(uint16).max);
+            kandilli.challengeProposedWinners(auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, type(uint24).max);
             uint256 chalBalAfter = challenger.balance;
             assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough bounty");
         }
 
         // Send bid which is after snuff time
         {
-            uint16 bidAfterSnuff = type(uint16).max;
+            uint24 bidAfterSnuff = type(uint24).max;
             for (uint256 i = 0; i < pwr.bids.length; i++) {
                 if (uint256(pwr.bids[i].timestamp) >= pwr.snuffTime) {
                     bidAfterSnuff = uint16(i);
                 }
             }
-            if (bidAfterSnuff == type(uint16).max) {
+            if (bidAfterSnuff == type(uint24).max) {
                 return;
             }
-            uint16[] memory dummyWinnerIds = new uint16[](1);
+            uint24[] memory dummyWinnerIds = new uint24[](1);
             dummyWinnerIds[0] = bidAfterSnuff;
-            bytes32 dummyHash = keccak256(abi.encodePacked(uint16ArrToBytes(dummyWinnerIds)));
+            bytes32 dummyHash = keccak256(abi.encodePacked(uint24ArrToBytes(dummyWinnerIds)));
             kandilli.proposeWinners{value: depositAmount}(
-                auctionId,
-                uint16ArrToBytes(dummyWinnerIds),
-                dummyHash,
-                pwr.totalBidAmount
+                auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, pwr.totalBidAmount
             );
             address challenger = utils.getNamedUser("challenger");
 
@@ -657,7 +607,7 @@ contract KandilliTest is DSTest {
             emit ChallengeSucceded(challenger, auctionId, 4);
             vm.prank(challenger);
             uint256 chalBalBefore = challenger.balance;
-            kandilli.challengeProposedWinners(auctionId, uint16ArrToBytes(dummyWinnerIds), dummyHash, type(uint16).max);
+            kandilli.challengeProposedWinners(auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, type(uint24).max);
             uint256 chalBalAfter = challenger.balance;
             assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough bounty");
         }
@@ -665,39 +615,28 @@ contract KandilliTest is DSTest {
         // Send wrong total amount
         if (pwr.totalBidAmount > 0) {
             kandilli.proposeWinners{value: depositAmount}(
-                auctionId,
-                pwr.winnerBidIdsBytes,
-                pwr.hash,
-                pwr.totalBidAmount - 1
+                auctionId, pwr.winnerBidIdsBytes, pwr.hash, pwr.totalBidAmount - 1
             );
             address challenger = utils.getNamedUser("challenger");
             vm.expectEmit(true, false, false, true);
             emit ChallengeSucceded(challenger, auctionId, 6);
             vm.prank(challenger);
-            uint256 chalBalBefore = challenger.balance;
-            kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIdsBytes, pwr.hash, type(uint16).max);
-            /*uint256 chalBalAfter = challenger.balance;
-            assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough bounty");*/
+            kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIdsBytes, pwr.hash, type(uint24).max);
         }
 
         // Send bad list #1:  last 2 items swapped
         if (pwr.numWinners > 1) {
-            uint16[] memory dummyWinnerIds = new uint16[](pwr.numWinners);
+            uint24[] memory dummyWinnerIds = new uint24[](pwr.numWinners);
             for (uint256 i = 0; i < pwr.numWinners; i++) {
                 dummyWinnerIds[i] = uint16(pwr.nBids[i].index);
             }
 
-            (dummyWinnerIds[pwr.numWinners - 1], dummyWinnerIds[pwr.numWinners - 2]) = (
-                dummyWinnerIds[pwr.numWinners - 2],
-                dummyWinnerIds[pwr.numWinners - 1]
-            );
+            (dummyWinnerIds[pwr.numWinners - 1], dummyWinnerIds[pwr.numWinners - 2]) =
+            (dummyWinnerIds[pwr.numWinners - 2], dummyWinnerIds[pwr.numWinners - 1]);
 
-            bytes32 dummyHash = keccak256(abi.encodePacked(uint16ArrToBytes(dummyWinnerIds)));
+            bytes32 dummyHash = keccak256(abi.encodePacked(uint24ArrToBytes(dummyWinnerIds)));
             kandilli.proposeWinners{value: depositAmount}(
-                auctionId,
-                uint16ArrToBytes(dummyWinnerIds),
-                dummyHash,
-                pwr.totalBidAmount
+                auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, pwr.totalBidAmount
             );
             address challenger = utils.getNamedUser("challenger");
 
@@ -705,24 +644,21 @@ contract KandilliTest is DSTest {
             emit ChallengeSucceded(challenger, auctionId, 7);
             vm.prank(challenger);
             uint256 chalBalBefore = challenger.balance;
-            kandilli.challengeProposedWinners(auctionId, uint16ArrToBytes(dummyWinnerIds), dummyHash, type(uint16).max);
+            kandilli.challengeProposedWinners(auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, type(uint24).max);
             uint256 chalBalAfter = challenger.balance;
             assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough bounty");
         }
 
         // Send bad list #2: Swap first loser with last winner.
         if (pwr.numWinners > numBids) {
-            uint16[] memory dummyWinnerIds = new uint16[](pwr.numWinners);
+            uint24[] memory dummyWinnerIds = new uint24[](pwr.numWinners);
             for (uint256 i = 0; i < pwr.numWinners - 1; i++) {
                 dummyWinnerIds[i] = uint16(pwr.nBids[i].index);
             }
             dummyWinnerIds[pwr.numWinners - 1] = uint16(pwr.nBids[pwr.numWinners].index);
-            bytes32 dummyHash = keccak256(abi.encodePacked(uint16ArrToBytes(dummyWinnerIds)));
+            bytes32 dummyHash = keccak256(abi.encodePacked(uint24ArrToBytes(dummyWinnerIds)));
             kandilli.proposeWinners{value: depositAmount}(
-                auctionId,
-                uint16ArrToBytes(dummyWinnerIds),
-                dummyHash,
-                pwr.totalBidAmount
+                auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, pwr.totalBidAmount
             );
             address challenger = utils.getNamedUser("challenger");
 
@@ -731,10 +667,7 @@ contract KandilliTest is DSTest {
             vm.prank(challenger);
             uint256 chalBalBefore = challenger.balance;
             kandilli.challengeProposedWinners(
-                auctionId,
-                uint16ArrToBytes(dummyWinnerIds),
-                dummyHash,
-                uint16(pwr.nBids[pwr.numWinners - 1].index)
+                auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, uint16(pwr.nBids[pwr.numWinners - 1].index)
             );
             uint256 chalBalAfter = challenger.balance;
             assertEq(chalBalAfter, chalBalBefore + depositAmount, "Challenger didn't receive enough bounty");
@@ -744,7 +677,7 @@ contract KandilliTest is DSTest {
         _proposeWinners(auctionId, startTime, true);
 
         vm.expectRevert(abi.encodeWithSignature("ChallengeFailedWinnerProposalIsCorrect()"));
-        kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIdsBytes, pwr.hash, type(uint16).max);
+        kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIdsBytes, pwr.hash, type(uint24).max);
     }
 
     function testChallengeWinnersProposalFailures(uint256 randomE) public {
@@ -753,23 +686,19 @@ contract KandilliTest is DSTest {
         //uint256 randomE = 4499550098297379889107541569912050205441959294117414913041628694394132133202;
         uint256 auctionId = 1;
         uint256 startTime = kandilli.getAuctionStartTime(auctionId);
-        uint256 depositAmount = kandilli.getAuctionRequiredWinnersProposalDeposit(auctionId);
         uint256 numBids = randomE % maxTestBidCount;
         _sendBids(auctionId, numBids, startTime, randomE);
         _snuffCandle(auctionId, randomE, startTime);
 
         // Try to challenge when winners not yet posted
         {
-            uint16[] memory dummyWinnerIds = new uint16[](3);
+            uint24[] memory dummyWinnerIds = new uint24[](3);
             dummyWinnerIds[0] = 3;
             dummyWinnerIds[1] = 3;
             dummyWinnerIds[2] = 3;
-            vm.expectRevert(abi.encodeWithSignature("CannotChallengeWinnersProposalBeforePosted()"));
+            vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
             kandilli.challengeProposedWinners(
-                auctionId,
-                uint16ArrToBytes(dummyWinnerIds),
-                keccak256(abi.encodePacked("x")),
-                0
+                auctionId, uint24ArrToBytes(dummyWinnerIds), keccak256(abi.encodePacked("x")), 0
             );
         }
 
@@ -787,13 +716,13 @@ contract KandilliTest is DSTest {
         }
 
         {
-            uint16[] memory dummyWinnerIds = new uint16[](3);
+            uint24[] memory dummyWinnerIds = new uint24[](3);
             dummyWinnerIds[0] = 3;
             dummyWinnerIds[1] = 3;
             dummyWinnerIds[2] = 3;
-            bytes32 dummyHash = keccak256(abi.encodePacked(uint16ArrToBytes(dummyWinnerIds)));
+            bytes32 dummyHash = keccak256(abi.encodePacked(uint24ArrToBytes(dummyWinnerIds)));
             vm.expectRevert(abi.encodeWithSignature("WinnerProposalHashDoesntMatchPostedHash()"));
-            kandilli.challengeProposedWinners(auctionId, uint16ArrToBytes(dummyWinnerIds), dummyHash, 0);
+            kandilli.challengeProposedWinners(auctionId, uint24ArrToBytes(dummyWinnerIds), dummyHash, 0);
         }
 
         vm.prank(utils.getNamedUser("proposer"));
@@ -813,12 +742,12 @@ contract KandilliTest is DSTest {
         kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIdsBytes, pwr.hash, uint16(pwr.bids.length));
 
         vm.expectRevert(abi.encodeWithSignature("ChallengeFailedWinnerProposalIsCorrect()"));
-        kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIdsBytes, pwr.hash, type(uint16).max);
+        kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIdsBytes, pwr.hash, type(uint24).max);
 
         // Fail to challenge after challenge period
         uint256 proposalTime = kandilli.getAuctionWinnerProposalTime(auctionId);
         vm.warp(proposalTime + fraudChallengePeriod + 1);
-        vm.expectRevert(abi.encodeWithSignature("CannotChallengeWinnersProposalAfterChallengePeriodIsOver()"));
+        vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
         kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIdsBytes, pwr.hash, 0);
         vm.stopPrank();
     }
@@ -906,11 +835,11 @@ contract KandilliTest is DSTest {
             //TODO: vm.assume
             return;
         }
-        vm.expectRevert(abi.encodeWithSignature("CannotTransferFundsBeforeWinnersProposed()"));
+        vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
         kandilli.transferAuctionFundsToOwner(auctionId);
         ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, true);
 
-        vm.expectRevert(abi.encodeWithSignature("CannotTransferFundsBeforeChallengePeriodEnds()"));
+        vm.expectRevert(abi.encodeWithSignature("KandilStateDoesntMatch()"));
         kandilli.transferAuctionFundsToOwner(auctionId);
 
         uint256 proposalTime = kandilli.getAuctionWinnerProposalTime(auctionId);
@@ -936,7 +865,7 @@ contract KandilliTest is DSTest {
             }
         }
 
-        uint256 totalPaidSnuffBounty = kandilli.getAuctionRetroSnuffBounty(auctionId);
+        uint256 totalPaidSnuffBounty = kandilli.getAuctionSnuffBounty(auctionId);
         uint256 totalPaidProposalBounty = kandilli.getAuctionWinnersProposalBounty(auctionId);
 
         if (totalPaidSnuffBounty > 0) {
@@ -992,7 +921,7 @@ contract KandilliTest is DSTest {
         ProposeWinnersResult memory pwr = _proposeWinners(auctionId, startTime, true);
 
         vm.expectRevert(abi.encodeWithSignature("ChallengeFailedWinnerProposalIsCorrect()"));
-        kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIdsBytes, pwr.hash, type(uint16).max);
+        kandilli.challengeProposedWinners(auctionId, pwr.winnerBidIdsBytes, pwr.hash, type(uint24).max);
 
         uint256 proposalTime = kandilli.getAuctionWinnerProposalTime(auctionId);
         vm.warp(proposalTime + fraudChallengePeriod + 1);
@@ -1014,7 +943,7 @@ contract KandilliTest is DSTest {
             }
         }
 
-        uint256 totalPaidSnuffBounty = kandilli.getAuctionRetroSnuffBounty(auctionId);
+        uint256 totalPaidSnuffBounty = kandilli.getAuctionSnuffBounty(auctionId);
         uint256 totalPaidProposalBounty = kandilli.getAuctionWinnersProposalBounty(auctionId);
 
         if (totalPaidSnuffBounty > 0) {
@@ -1029,55 +958,42 @@ contract KandilliTest is DSTest {
     }
 
     function testPack() public {
-        bytes
-            memory arrMke = hex"0f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d23002310231323";
-        uint16[] memory x = bytesToUInt16Arr(arrMke);
-        bytes memory y = uint16ArrToBytes(x);
-        uint16[] memory c = bytesToUInt16Arr(y);
+        bytes memory arrMke =
+                    hex"0f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d230023102313230f1103010d23002310231323";
+        uint24[] memory x = bytesToUInt24Arr(arrMke);
+        bytes memory y = uint24ArrToBytes(x);
+        uint24[] memory c = bytesToUInt24Arr(y);
         assertEq(keccak256(abi.encode(x)), keccak256(abi.encode(c)));
         assertEq(keccak256(abi.encode(arrMke)), keccak256(abi.encode(y)));
     }
 
-    function bytesToUInt16Arr(bytes memory _bytes) internal pure returns (uint16[] memory tempUint) {
+    function bytesToUInt24Arr(bytes memory _bytes) internal pure returns (uint24[] memory tempUint) {
         assembly {
-            let length := div(mload(_bytes), 2) // get size of _bytes and divide by 2 to get uint16 arr size.
+            let length := div(mload(_bytes), 3) // get size of _bytes and divide by 3 to get uint24 arr size.
             tempUint := mload(0x40)
             mstore(add(tempUint, 0x00), length)
             let i := 0
-            for {
-
-            } lt(i, length) {
-                i := add(i, 1)
-            } {
-                mstore(add(tempUint, add(mul(i, 0x20), 0x20)), mload(add(add(_bytes, 0x2), mul(i, 2))))
+            for {} lt(i, length) {i := add(i, 1)} {
+                mstore(add(tempUint, add(mul(i, 0x20), 0x20)), mload(add(add(_bytes, 0x3), mul(i, 3))))
             }
             mstore(0x40, add(tempUint, add(mul(i, 0x20), 0x20)))
         }
     }
 
-    function uint16ArrToBytes(uint16[] memory _uints) internal pure returns (bytes memory tempBytes) {
-        uint256 length = _uints.length * 2;
+    function uint24ArrToBytes(uint24[] memory _uints) internal pure returns (bytes memory tempBytes) {
+        uint256 length = _uints.length * 3;
         assembly {
             tempBytes := mload(0x40)
             mstore(tempBytes, length)
             let i := 0
-            for {
-
-            } lt(i, length) {
-                i := add(i, 1)
-            } {
-                mstore(add(tempBytes, add(mul(2, i), 0x20)), shl(240, mload(add(_uints, add(mul(i, 0x20), 0x20)))))
+            for {} lt(i, length) {i := add(i, 1)} {
+                mstore(add(tempBytes, add(mul(3, i), 0x20)), shl(232, mload(add(_uints, add(mul(i, 0x20), 0x20)))))
             }
             mstore(0x40, add(tempBytes, add(0x40, mul(0x20, div(length, 0x20)))))
         }
     }
 
-    function _sendBids(
-        uint256 auctionId,
-        uint256 bidCountToSend,
-        uint256 startTime,
-        uint256 randE
-    ) private {
+    function _sendBids(uint256 auctionId, uint256 bidCountToSend, uint256 startTime, uint256 randE) private {
         for (uint256 i = 0; i < bidCountToSend; i++) {
             uint256 rand = uint256(keccak256(abi.encodePacked(randE, i)));
             vm.warp(startTime + uint256(rand % auctionTotalDuration));
@@ -1090,36 +1006,28 @@ contract KandilliTest is DSTest {
         }
     }
 
-    function _snuffCandle(
-        uint256 auctionId,
-        uint256 vrf,
-        uint256 startTime
-    ) private {
+    function _snuffCandle(uint256 auctionId, uint256 vrf, uint256 startTime) private {
         vm.warp(startTime + auctionTotalDuration + 1);
         address snuffer = utils.getNamedUser("snuffer");
         vm.startPrank(snuffer);
 
-        vm.expectEmit(true, true, false, true);
+        /*        vm.expectEmit(true, true, false, true);
         emit Approval(snuffer, address(kandilli), vrfFee);
-        linkToken.approve(address(kandilli), vrfFee);
+        linkToken.approve(address(kandilli), vrfFee);*/
 
         vm.expectEmit(true, false, false, false);
         emit AuctionStarted(auctionId + 1, 0, 0);
         vm.expectEmit(true, false, false, false);
-        emit CandleSnuffed(snuffer, 1, bytes32(0));
+        emit CandleSnuffed(snuffer, 1, block.prevrandao);
 
-        bytes32 requestId = kandilli.retroSnuffCandle(auctionId);
+        kandilli.snuffCandle(auctionId);
         vm.stopPrank();
-        if (requestId != bytes32(0)) {
-            vrfCoordinatorMock.callBackWithRandomness(requestId, vrf, address(kandilli));
-        }
     }
 
-    function _proposeWinners(
-        uint256 auctionId,
-        uint256 startTime,
-        bool callPropose
-    ) private returns (ProposeWinnersResult memory result) {
+    function _proposeWinners(uint256 auctionId, uint256 startTime, bool callPropose)
+    private
+    returns (ProposeWinnersResult memory result)
+    {
         result.bids = kandilli.getAuctionBids(auctionId, 0, 0);
         result.snuffTime = kandilli.getAuctionCandleSnuffedTime(auctionId);
         uint256 bidCount = 0;
@@ -1140,7 +1048,7 @@ contract KandilliTest is DSTest {
                     timestamp: result.bids[i].timestamp,
                     bidAmount: result.bids[i].bidAmount,
                     isProcessed: result.bids[i].isProcessed,
-                    index: uint16(i)
+                    index: uint24(i)
                 });
             }
         }
@@ -1149,7 +1057,7 @@ contract KandilliTest is DSTest {
         }
 
         result.numWinners = kandilli.getAuctionMaxWinnerCount(auctionId);
-        result.vrfResult = kandilli.getAuctionVRF(auctionId);
+        result.entropyResult = kandilli.getAuctionEntropy(auctionId);
 
         uint256 depositAmount = kandilli.getAuctionRequiredWinnersProposalDeposit(auctionId);
 
@@ -1157,22 +1065,19 @@ contract KandilliTest is DSTest {
             result.numWinners = result.nBids.length;
         }
 
-        result.winnerBidIds = new uint16[](result.numWinners);
+        result.winnerBidIds = new uint24[](result.numWinners);
         result.totalBidAmount = 0;
         for (uint256 i = 0; i < result.numWinners; i++) {
-            result.winnerBidIds[i] = uint16(result.nBids[i].index);
+            result.winnerBidIds[i] = uint24(result.nBids[i].index);
             result.totalBidAmount += uint64(result.nBids[i].bidAmount);
         }
-        result.winnerBidIdsBytes = uint16ArrToBytes(result.winnerBidIds);
+        result.winnerBidIdsBytes = uint24ArrToBytes(result.winnerBidIds);
         result.hash = keccak256(abi.encodePacked(result.winnerBidIdsBytes));
         if (callPropose) {
             vm.deal(utils.getNamedUser("proposer"), depositAmount);
             vm.prank(utils.getNamedUser("proposer"));
             kandilli.proposeWinners{value: depositAmount}(
-                auctionId,
-                result.winnerBidIdsBytes,
-                result.hash,
-                result.totalBidAmount
+                auctionId, result.winnerBidIdsBytes, result.hash, result.totalBidAmount
             );
         }
     }
